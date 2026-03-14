@@ -4,8 +4,10 @@
 <p align="center"><img src="public/ragen_logo.jpeg" width="300px" alt="RAGEN icon" /></p>
 
 <p align="center">
-  <strong>RAGEN</strong> (<b>R</b>easoning <b>AGEN</b>t, pronounced like "reagent") is a flexible RL framework for training reasoning agents.
-  RAGEN serves as a <strong>diagnostic platform to understand agent training</strong>, equipping practitioners with metrics and tools to see <strong>why</strong> training goes well or not, and how to fix it.
+  <strong>RAGEN</strong> (<b>R</b>easoning <b>AGEN</b>) is a flexible RL framework for training reasoning agents.
+</p>
+<p align="center">
+  We develop <strong>diagnostics to understand <i>how</i> agent RL training works </strong>, and how to fix hidden issues.
 </p>
 
 <p align="center">

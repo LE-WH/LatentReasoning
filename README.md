@@ -135,15 +135,15 @@ See the [Rollout Filtering Guide](docs/guide_rollout_filtering.md) for more filt
 We are actively developing the next generation of RAGEN infrastructure and diagnostics, targeting a release in **late March 2026**.
 
 **Infrastructure**
-- [ ] **Async rollout engine** — decouple training and environment execution for higher throughput and better scalability
-- [ ] **HTTP-based environment interface** — allow training and environments to run in separate processes across machines
-- [ ] **Layered Env Wrapper** — modular wrapper design with separate environment layers
-- [ ] **Optional environment dependencies** — install only what you need for environments (e.g., `pip install ragen[webshop]`)
+- [ ] **Async rollout engine** 
+- [ ] **HTTP-based environment interface** 
+- [ ] **Layered Env Wrapper** 
+- [ ] **Optional environment dependencies** 
 
 **Diagnostics & Training Quality**
-- [ ] **Expanded benchmark suite** — additional environments to stress-test diagnostics across diverse, real-world agent tasks
-- [ ] **Extended MI diagnostic dashboard** — richer WandB visualizations for entropy, MI proxy, and gradient decomposition over training
-- [ ] **RL training metrics guide** — a practitioner's blog on how to read training signals (reward distribution, entropy, MI, gradient norms) and act on them before committing to a full run
+- [ ] **Expanded benchmark suite** to stress-test diagnostics across diverse, real-world agent tasks
+- [ ] **Extended MI diagnostic dashboard**, including richer WandB visualizations for entropy, MI proxy, and gradient decomposition over training
+- [ ] **RL training metrics guide**, including a practitioner's blog on how to read training signals (reward distribution, entropy, MI, gradient norms) and act on them before committing to a full run
 
 **Framework**
 - [ ] Update full documentation for <font color="#DC143C">RAGEN V2</font>

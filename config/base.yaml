@@ -177,3 +177,12 @@ ctx_manager:
       top_p: ${actor_rollout_ref.rollout.top_p}
       top_k: ${actor_rollout_ref.rollout.top_k}
       kwargs: null
+
+# Dual-vocabulary model settings
+# Set model_path to a dual-vocab model built with:
+#   python scripts/build_dual_vocab.py --base_model <model> --out_dir <tok_dir>
+#   python scripts/expand_model_to_dual_vocab.py --base_model <model> --dual_tok_dir <tok_dir> --out_dir <model_dir>
+dual_vocab:
+  # latent_only: if True, compute training loss only on latent (think-phase) tokens.
+  # If False (default), loss is computed on all response tokens.
+  latent_only: false

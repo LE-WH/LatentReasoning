@@ -15,6 +15,8 @@ from hydra.utils import to_absolute_path
 import numpy as np
 from omegaconf import OmegaConf, open_dict
 import wandb
+from ragen.dual_vocab.utils import is_dual_model, load_meta
+from ragen.dual_vocab.constraint import make_vllm_logits_processor
 
 
 def _get_rollout_val_kwarg(ro_config, key: str, default=None):
@@ -79,6 +81,26 @@ class VllmWrapperWg:  # Thi is a developing class for eval and test
         )
         if logprobs is not None:
             sampling_kwargs["logprobs"] = logprobs
+
+        # Dual-vocab constraint: if the model is a dual-vocab model, enforce
+        # visible/latent vocab switching during generation.
+        self._dual_meta = None
+        if is_dual_model(model_name):
+            self._dual_meta = load_meta(model_name)
+            meta = self._dual_meta
+            eos_id = tokenizer.eos_token_id
+            constraint = make_vllm_logits_processor(
+                V=meta["V"],
+                think_end_id=meta["think_end_token_id"],
+                eos_id=eos_id,
+            )
+            sampling_kwargs["logits_processors"] = [constraint]
+            print(
+                f"[VllmWrapperWg] Dual-vocab mode enabled: "
+                f"V={meta['V']}, L={meta['L']}, "
+                f"think_end='{meta['think_end_token']}' (id={meta['think_end_token_id']})"
+            )
+
         self.sampling_params = SamplingParams(**sampling_kwargs)
 
     def generate_sequences(self, lm_inputs: DataProto):

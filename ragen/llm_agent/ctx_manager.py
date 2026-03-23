@@ -22,6 +22,7 @@ from tensordict import TensorDict
 from dataclasses import asdict
 from ragen.llm_agent.memory.factory import create_memory
 from ragen.llm_agent.memory.base import BaseMemory
+from omegaconf import OmegaConf
 register_resolvers()
 
 def get_special_tokens(tokenizer: AutoTokenizer):
@@ -35,14 +36,29 @@ def get_special_tokens(tokenizer: AutoTokenizer):
         raise ValueError(f"Unsupported model: {tokenizer.name_or_path}")
     return special_token, reward_token
 
-def get_masks_and_scores(input_ids: torch.Tensor, tokenizer: AutoTokenizer, all_scores: List[List[float]] = None, use_turn_scores: bool = False, enable_response_mask: bool = False):
+def get_masks_and_scores(
+    input_ids: torch.Tensor,
+    tokenizer: AutoTokenizer,
+    all_scores: List[List[float]] = None,
+    use_turn_scores: bool = False,
+    enable_response_mask: bool = False,
+    dual_vocab_meta: dict = None,
+    latent_only: bool = False,
+):
     """
     input_ids: shape (bsz, seq_len)
     Get loss mask that only learns between <|im_start|>assistant and <|im_end|>. Currently only supports qwen.
     NOTE: important! This assumes that the input_ids starts with system and then user & assistant in alternative ways
+
+    dual_vocab_meta : optional dict from dual_vocab_meta.json (from ragen.dual_vocab.utils.load_meta).
+        When provided, latent tokens (ids in [V, V+L)) are identified and the loss mask is
+        updated accordingly.
+    latent_only : only compute loss on latent (think-phase) token positions.
+        Requires dual_vocab_meta. When False (default), the loss is computed on all response
+        tokens (both latent think tokens and visible answer tokens).
     """
     special_token, reward_token = get_special_tokens(tokenizer)
-    
+
     turn_starts = torch.where(input_ids == special_token, 1, 0)
     turn_indicators = torch.cumsum(turn_starts, dim=-1)
     if enable_response_mask:
@@ -50,7 +66,19 @@ def get_masks_and_scores(input_ids: torch.Tensor, tokenizer: AutoTokenizer, all_
     else:
         loss_mask = (turn_indicators > 1) # learns everything after system prompt
     response_mask = (turn_indicators % 2 == 1) & (turn_indicators > 1)
-    
+
+    # Dual-vocab: apply latent token masking on top of the turn-level mask
+    if dual_vocab_meta is not None:
+        V = dual_vocab_meta["V"]
+        L = dual_vocab_meta["L"]
+        # latent_mask[i, t] = True if token t is a latent token (in [V, V+L))
+        latent_mask = (input_ids >= V) & (input_ids < V + L)
+        if latent_only:
+            # Only train on latent token positions within the response
+            loss_mask = loss_mask & latent_mask
+        # Otherwise: loss_mask already covers full response; latent tokens are
+        # included naturally. No further adjustment needed.
+
     score_tensor = torch.zeros_like(input_ids, dtype=torch.float32)
     if use_turn_scores:
         for idx, scores in enumerate(zip_longest(*all_scores, fillvalue=0)):
@@ -95,6 +123,18 @@ class ContextManager:
         self.processor = processor
         self.action_sep = self.config.agent_proxy.action_sep
         self.special_token_list = ["<think>", "</think>", "<answer>", "</answer>", "<|im_start|>", "<|im_end|>"]
+
+        # Dual-vocab support: load metadata if the model is a dual-vocab model
+        from ragen.dual_vocab.utils import is_dual_model, load_meta as _load_meta
+        model_path = config.actor_rollout_ref.model.path
+        self._dual_vocab_meta = _load_meta(model_path) if is_dual_model(model_path) else None
+        self._latent_only = bool(OmegaConf.select(config, "dual_vocab.latent_only", default=False))
+        if self._dual_vocab_meta is not None:
+            print(
+                f"[ContextManager] Dual-vocab mode: "
+                f"V={self._dual_vocab_meta['V']}, L={self._dual_vocab_meta['L']}, "
+                f"latent_only={self._latent_only}"
+            )
 
         self.es_cfg = self.config.es_manager[mode]
         self.env_nums = {
@@ -1172,7 +1212,9 @@ class ContextManager:
         score_tensor, loss_mask, response_mask = get_masks_and_scores(
             input_ids, self.tokenizer, scores,
             use_turn_scores=self.config.agent_proxy.use_turn_scores,
-            enable_response_mask=self.config.enable_response_mask
+            enable_response_mask=self.config.enable_response_mask,
+            dual_vocab_meta=self._dual_vocab_meta,
+            latent_only=self._latent_only,
         )
 
         # Normalize scores

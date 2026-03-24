@@ -4,9 +4,8 @@ constraint.py
 Dual-vocabulary logits processors for LatentReasoning.
 
 Two interfaces:
-  1. HuggingFace (transformers.LogitsProcessor) — used by VllmWrapperWg via
-     vLLM's per-request logits_processors in SamplingParams.
-  2. Plain callable compatible with vLLM's SamplingParams.logits_processors
+  1. HuggingFace (transformers.LogitsProcessor) — used for HF-style generation.
+  2. Per-request callable for vLLM V0 SamplingParams.logits_processors
      (signature: (List[int], torch.Tensor) -> torch.Tensor).
 
 Vocab layout produced by build_dual_vocab.py / expand_model_to_dual_vocab.py:

@@ -34,7 +34,7 @@ actor_rollout_ref:
     dtype: bfloat16
     max_model_len: 3600
     prompt_length: 1
-    response_length: 400
+    response_length: 4000
     gpu_memory_utilization: 0.9
     max_num_batched_tokens: 8192
     enforce_eager: True

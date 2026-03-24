@@ -1,4 +1,0 @@
-bash scripts/build_dual_model.sh \                                                                                                                                                                                       
-    --base_model Qwen/Qwen2.5-3B-Instruct \                                                                                                                                                                              
-    --out_dir ./checkpoints/dual_qwen_3b \                                                                                                                                                                               
-    --think_missing add                       

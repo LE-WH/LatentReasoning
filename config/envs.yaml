@@ -67,7 +67,7 @@ custom_envs:
       When you are exactly next to a box, you can push it by moving in the same direction. 
       You cannot push a box through a wall, and you cannot pull a box.
       The answer should be a sequence of actions, like <answer>Right || Right || Up</answer>.
-    max_tokens: 120
+    max_tokens: 4000
     parallel_friendly: false
     max_workers: 32
     env_config: # keys should be a subset of SokobanConfig

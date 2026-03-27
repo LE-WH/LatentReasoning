@@ -17,7 +17,9 @@ from omegaconf import OmegaConf, open_dict
 import wandb
 from ragen.dual_vocab.utils import is_dual_model, load_meta
 from ragen.dual_vocab.constraint import make_vllm_logits_processor
-
+import atexit
+import sglang as sgl
+import torch
 
 def _get_rollout_val_kwarg(ro_config, key: str, default=None):
     return OmegaConf.select(
@@ -158,6 +160,129 @@ class VllmWrapperWg:  # Thi is a developing class for eval and test
         return lm_outputs
 
 
+class SglangWrapperWg:
+    def __init__(self, config, tokenizer):
+        self.config = config
+        self.tokenizer = tokenizer
+        ro_config = config.actor_rollout_ref.rollout
+        model_name = config.actor_rollout_ref.model.path
+
+        enable_soft_thinking = bool(
+            OmegaConf.select(ro_config, "enable_soft_thinking", default=True)
+        )
+        max_topk = int(OmegaConf.select(ro_config, "max_topk", default=30))
+
+        engine_kwargs = dict(
+            model_path=model_name,
+            tp_size=ro_config.tensor_model_parallel_size,
+            dtype=ro_config.dtype,
+            trust_remote_code=True,
+            mem_fraction_static=float(
+                OmegaConf.select(ro_config, "gpu_memory_utilization", default=0.5)
+            ),
+            # required by soft thinking pkg (overlap scheduler has bugs with soft thinking)
+            disable_cuda_graph=True,
+            disable_overlap_schedule=True,
+            enable_soft_thinking=enable_soft_thinking,
+            max_topk=max_topk,
+        )
+        print(f"[SglangWrapperWg] Initializing sgl.Engine: {engine_kwargs}")
+        self.engine = sgl.Engine(**engine_kwargs)
+        atexit.register(self._shutdown)
+
+        # Resolve all generation params; val_kwargs take priority over top-level rollout
+        t = float(_get_rollout_val_kwarg(ro_config, "temperature", default=1.0))
+        self.sampling_params = {
+            "temperature": t,
+            "top_p": float(_get_rollout_val_kwarg(ro_config, "top_p", default=1.0)),
+            "top_k": int(_get_rollout_val_kwarg(ro_config, "top_k", default=30)),
+            "min_p": float(_get_rollout_val_kwarg(ro_config, "min_p", default=0.0)),
+            "repetition_penalty": float(
+                _get_rollout_val_kwarg(ro_config, "repetition_penalty", default=1.0)
+            ),
+            "after_thinking_temperature": float(
+                _get_rollout_val_kwarg(ro_config, "after_thinking_temperature", default=t)
+            ),
+            "after_thinking_top_p": float(
+                _get_rollout_val_kwarg(ro_config, "after_thinking_top_p", default=1.0)
+            ),
+            "after_thinking_top_k": int(
+                _get_rollout_val_kwarg(ro_config, "after_thinking_top_k", default=30)
+            ),
+            "after_thinking_min_p": float(
+                _get_rollout_val_kwarg(ro_config, "after_thinking_min_p", default=0.0)
+            ),
+            "early_stopping_entropy_threshold": float(
+                _get_rollout_val_kwarg(
+                    ro_config, "early_stopping_entropy_threshold", default=0.0
+                )
+            ),
+            "early_stopping_length_threshold": int(
+                _get_rollout_val_kwarg(
+                    ro_config, "early_stopping_length_threshold", default=256
+                )
+            ),
+            "max_new_tokens": ro_config.response_length,
+            "think_end_str": str(
+                OmegaConf.select(ro_config, "think_end_str", default="</think>")
+            ),
+            "n": 1,
+        }
+        print(f"[SglangWrapperWg] sampling_params: {self.sampling_params}")
+
+    def _shutdown(self):
+        if hasattr(self, "engine") and self.engine is not None:
+            print("[SglangWrapperWg] Shutting down sgl.Engine.")
+            try:
+                self.engine.shutdown()
+            except Exception:
+                pass
+            torch.cuda.empty_cache()
+            self.engine = None
+
+    def __del__(self):
+        self._shutdown()
+
+    def generate_sequences(self, lm_inputs: DataProto) -> DataProto:
+        if lm_inputs.meta_info.get("skip_generation", False):
+            return lm_inputs
+
+        input_ids = lm_inputs.batch["input_ids"]
+        prompt_list = self.tokenizer.batch_decode(input_ids, skip_special_tokens=False)
+        prompt_list = [t.replace("<|endoftext|>", "") for t in prompt_list]
+
+        # Batched generation — matches run_sglang_softthinking.py
+        outputs = self.engine.generate(prompt_list, self.sampling_params)
+
+        texts, entropys, n_tokens_list = [], [], []
+        for o in outputs:
+            texts.append(o["text"])
+            meta = o.get("meta_info", {})
+            n_tokens_list.append(meta.get("completion_tokens", len(o["text"].split())))
+
+            # Compute mean per-token entropy from topk_probs in meta_info
+            topk_probs_list = meta.get("output_topk_prob_list", None)
+            if topk_probs_list:
+                ent_total = 0.0
+                for step_probs in topk_probs_list:
+                    probs = np.array(step_probs, dtype=np.float32)
+                    probs = probs[probs > 0]
+                    ent_total += -(probs * np.log(probs + 1e-12)).sum()
+                entropys.append(ent_total / max(len(topk_probs_list), 1))
+            else:
+                entropys.append(0.0)
+
+        lm_outputs = DataProto()
+        lm_outputs.non_tensor_batch = {
+            "response_texts": texts,
+            "env_ids": lm_inputs.non_tensor_batch["env_ids"],
+            "group_ids": lm_inputs.non_tensor_batch["group_ids"],
+            "entropys": np.array(entropys, dtype=np.float32),
+            "n_tokens": np.array(n_tokens_list, dtype=np.int64),
+        }
+        lm_outputs.meta_info = lm_inputs.meta_info
+        return lm_outputs
+
 class ApiCallingWrapperWg:
     """Wrapper class for API-based LLM calls that fits into the VERL framework"""
 
@@ -235,9 +360,8 @@ class LLMAgentProxy:
             lm_outputs = unpad_dataproto(padded_lm_outputs, pad_size=pad_size)
             lm_outputs.meta_info = lm_inputs.meta_info
             lm_outputs.non_tensor_batch = lm_inputs.non_tensor_batch
-        elif isinstance(self.actor_wg, VllmWrapperWg) or isinstance(
-            self.actor_wg, ApiCallingWrapperWg
-        ):
+        elif isinstance(self.actor_wg, (VllmWrapperWg, ApiCallingWrapperWg, SglangWrapperWg)):
+
             lm_outputs = self.actor_wg.generate_sequences(lm_inputs)
         else:
             raise ValueError(f"Unsupported actor worker type: {type(self.actor_wg)}")
@@ -371,7 +495,14 @@ def main(config):
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
     os.environ["CUDA_VISIBLE_DEVICES"] = str(config.system.CUDA_VISIBLE_DEVICES)
     tokenizer = AutoTokenizer.from_pretrained(config.actor_rollout_ref.model.path)
-    actor_wg = VllmWrapperWg(config, tokenizer)
+    
+    ro_name = OmegaConf.select(config, "actor_rollout_ref.rollout.name", default="vllm")
+    if ro_name == "sglang":
+        actor_wg = SglangWrapperWg(config, tokenizer)
+    else:
+        actor_wg = VllmWrapperWg(config, tokenizer)
+
+    
     proxy = LLMAgentProxy(config, actor_wg, tokenizer)
     import time
     start_time = time.time()

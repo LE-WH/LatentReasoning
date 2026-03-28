@@ -1,0 +1,6 @@
+defaults:
+  - base
+  - _self_
+
+benchmark: gsm8k
+method: direct

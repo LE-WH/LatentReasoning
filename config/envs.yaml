@@ -371,3 +371,17 @@ custom_envs:
       scramble_depth: 1
       max_steps: 20
       render_mode: "text"
+
+  GSM8K:
+    env_type: static
+    max_actions_per_traj: 1
+    env_instruction: |
+      You are solving a math word problem. Read the problem carefully and compute the final numerical answer.
+      Show your reasoning, then provide the answer.
+      Example: <think>Step-by-step reasoning...</think><answer>42</answer>
+    max_tokens: 512
+    parallel_friendly: false
+    max_workers: 32
+    env_config:
+      dataset_name: gsm8k
+      cache_dir: ./data

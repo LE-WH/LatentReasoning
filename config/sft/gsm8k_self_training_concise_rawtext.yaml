@@ -1,0 +1,35 @@
+# Self-Training Elicits Concise Reasoning (arxiv 2502.20122)
+# Repo: https://github.com/TergelMunkhbat/concise-reasoning
+#
+# Raw text version: matches the paper's exact training format.
+# Uses raw text (no chat template) — same as the paper's sft_trainer.py.
+
+defaults:
+  - base
+  - _self_
+
+benchmark: gsm8k
+method: concise
+
+model:
+  max_length: 2048
+
+data:
+  path: data/sft/gsm8k_concise_paper_augmented.jsonl
+
+training:
+  learning_rate: 1.0e-5
+  num_epochs: 1
+  lr_scheduler_type: constant
+  warmup_ratio: 0.0
+  weight_decay: 0.0
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 1
+  gradient_checkpointing: true
+  logging_steps: 16
+  seed: 0
+  use_chat_template: false     # paper's original format
+  output_dir: results/sft/gsm8k/qwen2.5-3b-self-training-concise-rawtext
+
+lora:
+  enabled: false

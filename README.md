@@ -10,6 +10,7 @@ LatentReasoning extends the [RAGEN](https://github.com/mll-lab-nu/RAGEN) framewo
 - **`clone_eos` initialisation.** Newly-added `<think>`/`</think>` tokens are initialised by cloning the model's end-of-turn token (e.g. `<|im_end|>` for Qwen, `<|eot_id|>` for Llama-3) with subtle noise, giving the model a meaningful starting point so it can learn to transition out of the think phase.
 - **Latent-only training.** With `dual_vocab.latent_only=true`, loss gradients only flow through latent token positions, training the model's internal reasoning without affecting its visible output distribution.
 - **Static dataset evaluation.** A generic `StaticEnv` wrapper supports evaluating on HuggingFace datasets (MATH, GSM8K, MMLU, MetaMathQA) with pluggable processors and scorers.
+- **SFT pipeline.** Supervised fine-tuning with two methods: direct (answer-only) and self-training concise (shortest correct chain-of-thought). Can serve as a warm-start before RL training.
 
 ---
 
@@ -111,6 +112,7 @@ CUDA_VISIBLE_DEVICES=0 python -m ragen.eval \
 | Tag | Dataset |
 |---|---|
 | `MATH` | hendrycks competition math (`nlile/hendrycks-MATH-benchmark`) |
+| `GSM8K` | grade school math (`openai/gsm8k`) |
 | `StaticMetaMathQA` | MetaMathQA via the generic StaticEnv |
 | `MetamathQA` | MetaMathQA via the dedicated env |
 
@@ -121,6 +123,81 @@ CUDA_VISIBLE_DEVICES=0 python -m ragen.eval \
     model_path=./checkpoints/dual_metamathqa/global_step_400 \
     system.CUDA_VISIBLE_DEVICES=0
 ```
+
+---
+
+## SFT (Supervised Fine-Tuning)
+
+An SFT pipeline for training reasoning models before or independently of RL. Two methods are available:
+
+- **Direct**: answer-only supervision (no reasoning trace)
+- **Self-training concise**: samples multiple chain-of-thought traces, selects the shortest correct one per question
+
+### Quick start
+
+**Direct SFT on GSM8K:**
+```bash
+python -m sft.train --config-path ../config/sft --config-name gsm8k_direct
+```
+
+**Self-training concise (XML format, RAGEN-compatible):**
+```bash
+python -m sft.train --config-path ../config/sft --config-name gsm8k_self_training_concise
+```
+
+**Self-training concise (raw text, paper-aligned):**
+```bash
+python -m sft.train --config-path ../config/sft --config-name gsm8k_self_training_concise_rawtext
+```
+
+### Full self-training pipeline
+
+The self-training concise method has a multi-step pipeline. Two end-to-end scripts are provided:
+
+```bash
+# XML format (RAGEN-compatible, uses <think>/<answer> tags)
+bash scripts/sft/pipeline_xml.sh
+
+# Raw text format (paper-aligned, no XML tags)
+bash scripts/sft/pipeline_rawtext.sh
+```
+
+Both scripts run these steps:
+1. **Zero-shot sampling** -- generate multiple CoT responses per question using vLLM
+2. **Build exemplars** -- select the shortest correct traces as few-shot exemplars
+3. **Few-shot sampling** -- resample with the exemplars as demonstrations
+4. **Select training data** -- per-question, pick the shortest correct trace (merging zero-shot + few-shot)
+5. **Train** -- fine-tune the model on the selected traces
+6. **Evaluate** -- test on GSM8K
+
+### SFT evaluation
+
+**Raw text eval:**
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m sft.eval_raw \
+    --model results/sft/gsm8k/<model_dir> \
+    --output results/sft/gsm8k/<model_dir>/eval/gsm8k_eval.jsonl
+```
+
+**RAGEN eval (uses the full environment framework):**
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/sft/eval_ragen.py \
+    --config-name _11_gsm8k \
+    model_path=results/sft/gsm8k/<model_dir>
+```
+
+### SFT configs
+
+Configs live in `config/sft/`. Key settings in `base.yaml`:
+
+| Setting | Default |
+|---|---|
+| Base model | `Qwen/Qwen2.5-3B-Instruct` |
+| LoRA | rank=64, alpha=128 (disabled in concise configs for full fine-tuning) |
+| Learning rate | 2e-5 (base), 1e-5 (concise) |
+| Epochs | 3 (base), 1 (concise) |
+| Max length | 2048 |
+| Precision | bf16 |
 
 ---
 

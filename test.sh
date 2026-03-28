@@ -1,0 +1,1 @@
+  CUDA_VISIBLE_DEVICES=0 python -m ragen.eval  --config-name eval  model_path=./checkpoints/tergel3b  system.CUDA_VISIBLE_DEVICES=0  es_manager.train.env_configs.tags='["MATH"]'   es_manager.train.env_configs.n_groups='[8]' es_manager.val.env_configs.tags='["MATH"]' es_manager.val.env_configs.n_groups='[32]'    

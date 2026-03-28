@@ -16,7 +16,9 @@ Think-boundary token selection
 Searched in order; first existing single-token match wins.
   start: <think>  <thinking>  [THINK]  <|think|>
   end  : </think> </thinking> [/THINK] <|/think|>
-Pass --think_missing add to auto-add the first candidate if none exist.
+Pass --think_missing add to auto-add the first candidate if none exist (random init).
+Pass --think_missing clone_eos to auto-add and init from the model's EOS-like token
+  (e.g. <|im_end|> for Qwen, <|eot_id|> for Llama-3) with subtle noise.
 
 Latent vocab modes
 ------------------
@@ -61,6 +63,16 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 DEFAULT_THINK_START_CANDIDATES = ["<think>", "<thinking>", "[THINK]", "<|think|>"]
 DEFAULT_THINK_END_CANDIDATES = ["</think>", "</thinking>", "[/THINK]", "<|/think|>"]
 
+# Ordered by preference: model-specific end-of-turn tokens, then generic EOS.
+# The first one found in the tokenizer's vocab is used as the clone source for
+# think-boundary tokens when think_missing="clone_eos".
+EOS_CLONE_CANDIDATES = [
+    "<|im_end|>",       # Qwen family
+    "<|eot_id|>",       # Llama-3 family
+    "<|end|>",          # Phi-3 family
+    "</s>",             # LLaMA-2 / Mistral / general sentencepiece
+]
+
 
 def _is_single_token(tok, token_str: str) -> Optional[int]:
     vocab = tok.get_vocab()
@@ -70,6 +82,23 @@ def _is_single_token(tok, token_str: str) -> Optional[int]:
     if len(ids) == 1 and ids[0] == vocab[token_str]:
         return ids[0]
     return None
+
+
+def _find_eos_clone_source(tok) -> Tuple[str, int]:
+    """Find the best end-of-turn token to clone from for think-boundary init."""
+    for candidate in EOS_CLONE_CANDIDATES:
+        tid = _is_single_token(tok, candidate)
+        if tid is not None:
+            return candidate, tid
+    # Last resort: use the tokenizer's own eos_token
+    if tok.eos_token is not None:
+        tid = _is_single_token(tok, tok.eos_token)
+        if tid is not None:
+            return tok.eos_token, tid
+    raise ValueError(
+        "Cannot find any EOS-like token to clone from.\n"
+        f"Searched: {EOS_CLONE_CANDIDATES} + tokenizer.eos_token={tok.eos_token}"
+    )
 
 
 def resolve_think_token(
@@ -88,7 +117,7 @@ def resolve_think_token(
         raise ValueError(
             f"No think-{role} token found in the tokenizer.\n"
             f"Searched: {candidates}\n"
-            f"Run with --think_missing add to automatically add '{candidates[0]}'."
+            f"Run with --think_missing add or clone_eos to automatically add '{candidates[0]}'."
         )
 
     token_to_add = candidates[0]
@@ -114,7 +143,7 @@ def build_dual_vocab_tokenizer(
     filler_prefix: str = "<|filler_{}|>",
 ) -> dict:
     assert mode in ("full_copy", "subset", "custom")
-    assert think_missing in ("add", "error")
+    assert think_missing in ("add", "clone_eos", "error")
 
     if think_start_candidates is None:
         think_start_candidates = DEFAULT_THINK_START_CANDIDATES
@@ -148,6 +177,13 @@ def build_dual_vocab_tokenizer(
     think_end_str, think_end_id, end_added = resolve_think_token(
         tok, think_end_candidates, role="end", if_missing=think_missing
     )
+
+    # If clone_eos, find the EOS-like token to use as initialisation source
+    think_clone_source_id: Optional[int] = None
+    think_clone_source_str: Optional[str] = None
+    if think_missing == "clone_eos" and (start_added or end_added):
+        think_clone_source_str, think_clone_source_id = _find_eos_clone_source(tok)
+        print(f"  Clone source for think tokens: '{think_clone_source_str}' (id={think_clone_source_id})")
 
     V_final = len(tok)
     n_added = (1 if start_added else 0) + (1 if end_added else 0)
@@ -227,6 +263,9 @@ def build_dual_vocab_tokenizer(
         "think_start_token_id": think_start_id,
         "think_end_token": think_end_str,
         "think_end_token_id": think_end_id,
+        "think_init_mode": think_missing if (start_added or end_added) else "existing",
+        "think_clone_source_id": think_clone_source_id,
+        "think_clone_source_token": think_clone_source_str,
     }
 
     meta_path = os.path.join(out_dir, "dual_vocab_meta.json")
@@ -249,7 +288,7 @@ def parse_args():
     p.add_argument("--filler_prefix", default="<|filler_{}|>")
     p.add_argument("--think_start", nargs="+", default=None, metavar="TOKEN")
     p.add_argument("--think_end", nargs="+", default=None, metavar="TOKEN")
-    p.add_argument("--think_missing", choices=["add", "error"], default="error")
+    p.add_argument("--think_missing", choices=["add", "clone_eos", "error"], default="error")
     p.add_argument("--subset_ids_file", default=None)
     p.add_argument("--subset_regex", default=None)
     p.add_argument("--custom_tokens_file", default=None)

@@ -26,7 +26,7 @@ from omegaconf import OmegaConf
 register_resolvers()
 
 def get_special_tokens(tokenizer: AutoTokenizer):
-    if "qwen" in tokenizer.name_or_path.lower():
+    if "qwen" in tokenizer.name_or_path.lower() or "<|im_start|>" in tokenizer.get_vocab():
         special_token = tokenizer.encode("<|im_start|>")[0]
         reward_token = tokenizer.encode("<|im_end|>")[0]
     elif "llama-3" in tokenizer.name_or_path.lower():

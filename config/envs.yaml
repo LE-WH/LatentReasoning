@@ -191,8 +191,32 @@ custom_envs:
     env_type: metamathqa
     max_actions_per_traj: 1
     env_instruction: "You are solving Math problems. "
-    max_tokens: 100
+    max_tokens: 5000
     env_config: null
+
+  MATH:
+    env_type: static
+    max_actions_per_traj: 1
+    env_instruction: "You are solving competition math problems. Provide your final answer in the format <answer>YOUR_ANSWER</answer>."
+    max_tokens: 5000
+    parallel_friendly: true
+    max_workers: 32
+    env_config:
+      dataset_name: "math"
+      cache_dir: "./data"
+      split: "test"
+
+  StaticMetaMathQA:
+    env_type: static
+    max_actions_per_traj: 1
+    env_instruction: "You are solving Math problems. Provide your final answer in the format <answer>YOUR_ANSWER</answer>."
+    max_tokens: 5000
+    parallel_friendly: true
+    max_workers: 32
+    env_config:
+      dataset_name: "metamathqa"
+      cache_dir: "./data"
+      split: "train"
 
   WebShopFull:
     env_type: webshop

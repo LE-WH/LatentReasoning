@@ -1,203 +1,163 @@
-<h1 align="center">RAGEN: Training Agents by Reinforcing Reasoning</h1>
-<h3 align="center"><em>Diagnose agent failure modes. Make your RL training better.</em></h3>
+# LatentReasoning
 
-<p align="center"><img src="public/ragen_logo.jpeg" width="300px" alt="RAGEN icon" /></p>
+**Dual-vocabulary latent chain-of-thought for LLM agents.**
 
-<p align="center">
-  <strong>RAGEN</strong> (<b>R</b>easoning <b>AGEN</b>T) is a flexible RL framework for training reasoning agents.
-</p>
-<p align="center">
-  We develop <strong>diagnostics to understand <i>how</i> agent RL training works </strong>, and how to fix hidden issues.
-</p>
+LatentReasoning extends the [RAGEN](https://github.com/mll-lab-nu/RAGEN) framework with a dual-vocabulary architecture: the model reasons in a *latent* token space during `<think>...</think>`, then answers in the standard *visible* vocabulary. This separates "how the model thinks" from "what it says," enabling experiments on latent-only training, compressed reasoning, and hidden chain-of-thought.
 
-<p align="center">
-  <a href="https://github.com/mll-lab-nu/RAGEN/blob/main/RAGEN-v2.pdf"><img src="https://img.shields.io/badge/📄_V2_Paper-DC143C?style=for-the-badge&logoColor=white" alt="V2 Paper"></a>
-  <a href="https://arxiv.org/abs/2504.20073"><img src="https://img.shields.io/badge/📄_v1_Paper-FF8C00?style=for-the-badge&logoColor=white" alt="v1 Paper"></a>
-  <a href="https://ragen-ai.github.io/"><img src="https://img.shields.io/badge/📝_HomePage-FF5722?style=for-the-badge&logoColor=white" alt="Blog"></a>
-  <a href="https://ragen-doc.readthedocs.io/"><img src="https://img.shields.io/badge/📚_Documentation-4285F4?style=for-the-badge&logoColor=white" alt="Documentation"></a>
-  <a href="https://x.com/wzihanw/status/1915052871474712858"><img src="https://img.shields.io/badge/🔍_Post-34A853?style=for-the-badge&logoColor=white" alt="Post"></a>
-  <a href="https://api.wandb.ai/links/zihanwang-ai-northwestern-university/a8er8l7b"><img src="https://img.shields.io/badge/🧪_Experiment_Log-AB47BC?style=for-the-badge&logoColor=white" alt="Experiment Log"></a>
-</p>
+## Key ideas
 
-> **Looking for the V1 README?** Please take a look [here](docs/readme_v1.md).
+- **Dual vocabulary.** The tokenizer is expanded so that visible tokens live in `[0, V)` and latent mirrors in `[V, V+L)`. A logits-processor constraint enforces that only latent tokens are generated during the think phase, and only visible tokens after `</think>`.
+- **`clone_eos` initialisation.** Newly-added `<think>`/`</think>` tokens are initialised by cloning the model's end-of-turn token (e.g. `<|im_end|>` for Qwen, `<|eot_id|>` for Llama-3) with subtle noise, giving the model a meaningful starting point so it can learn to transition out of the think phase.
+- **Latent-only training.** With `dual_vocab.latent_only=true`, loss gradients only flow through latent token positions, training the model's internal reasoning without affecting its visible output distribution.
+- **Static dataset evaluation.** A generic `StaticEnv` wrapper supports evaluating on HuggingFace datasets (MATH, GSM8K, MMLU, MetaMathQA) with pluggable processors and scorers.
 
-## News
+---
 
-- **2026.3.12.** We are excited to release <font color="#DC143C">RAGEN V2</font>! We introduce a systematic study of reasoning collapse in agent RL and lightweight interventions for stable training. See the [<font color="#DC143C">v2 paper</font>](https://ragen-ai.github.io/v2).
-- **2025.4.20.** RAGEN V1 [paper](https://arxiv.org/abs/2504.20073) published on arXiv.
-- **2025.1.27.** Initial RAGEN release. [Post](https://x.com/wzihanw/status/1884092805598826609).
-
-
-## About
-
-RAGEN is built around **StarPO** (**S**tate-**T**hinking-**A**ctions-**R**eward **P**olicy **O**ptimization), a unified RL framework for training multi-turn, trajectory-level agents with flexible control over reasoning processes, reward assignment mechanisms, and prompt-rollout structures.
-
-**RAGEN is flexible with:**
-
-- **StarPO framework.** Unified optimization for multi-turn agents, supporting both trajectory-level and turn-wise training.
-- **10 built-in environments.** Sokoban, FrozenLake, WebShop, DeepCoder, SearchQA, Lean, Bandit, Countdown, MetaMathQA, Sudoku.
-- **Gym-compatible interface.** Easy to add custom environments.
-
-**<font color="#DC143C">RAGEN V2</font> additionally introduces:**
-
-- **SNR-Adaptive Filtering (<font color="#DC143C">V2</font>).** Lightweight rollout filtering based on reward variance to mitigate noisy gradient updates.
-- **Reasoning collapse diagnostics (<font color="#DC143C">V2</font>).** Mutual information proxy metrics to detect and monitor template collapse during training.
-
-
-## Algorithm
-
-### StarPO: Reinforcing Reasoning via Trajectory-Level Optimization
-
-<p align="center"><img src="public/starpo_logo.png" width="800px" alt="StarPO Framework" /></p>
-<p align="center" style="font-size: 16px; max-width: 800px; margin: 0 auto;">
-The StarPO (State-Thinking-Action-Reward Policy Optimization) framework with two interleaved stages: <b>rollout stage</b> and <b>update stage</b>. The LLM generates reasoning-guided actions to interact with the environment, collecting trajectory-level rewards to jointly optimize reasoning and action strategies.
-</p>
-
-**MDP Formulation.** Agent-environment interactions are formulated as Markov Decision Processes (MDPs) where states and actions are token sequences, allowing LLMs to reason over environment dynamics. The objective is to maximize expected cumulative rewards across multiple interaction turns.
-
-**Rollout Stage.** Given an initial state, the LLM generates multiple trajectories. At each step, the model produces a reasoning-guided action: `<think>...</think><ans> action </ans>`. The environment returns feedback (reward and next state).
-
-**Update Stage.** StarPO optimizes entire trajectories using importance sampling. It supports:
-- **PPO.** Token-level advantage estimation via a value function over trajectories.
-- **GRPO.** Normalized reward assigned to the full trajectory.
-
-### <font color="#DC143C">V2</font>: Diagnosing Template Collapse
-
-Entropy alone cannot detect *template collapse*, where reasoning appears diverse within a single input but becomes input-agnostic across inputs. <font color="#DC143C">RAGEN V2</font> decomposes reasoning quality into two axes:
-- **Within-input diversity:** Conditional Entropy H(Z|X)
-- **Cross-input distinguishability:** Mutual Information I(X;Z)
-
-SNR-Adaptive Filtering uses reward variance as a lightweight proxy to select high-signal prompts each iteration, directly addressing the root cause of template collapse.
-
-
-## Update Log
-
-**2026.3.12.** <font color="#DC143C">RAGEN V2</font> is released! Check out our [<font color="#DC143C">v2 paper</font>](https://ragen-ai.github.io/v2).
-
-<details>
-<summary>Older updates</summary>
-
-**2025.5.8.** Official [Documentation](https://ragen-doc.readthedocs.io/) released.
-
-**2025.5.2.** A [tracking document](https://docs.google.com/document/d/1bg7obeiKTExuHHBl5uOiSpec5uLDZ2Tgvxy6li5pHX4/edit?usp=sharing) for logging minor codebase updates is released.
-
-**2025.4.20.** RAGEN V1 [paper](https://arxiv.org/abs/2504.20073) published. Codebase restructured: veRL integrated as a submodule; architecture decomposed into three modules — Environment State Manager, Context Manager, and Agent Proxy.
-
-**2025.3.13.** RAGEN codebase refactoring underway. See the [developing branch](https://github.com/ZihanWang314/RAGEN/tree/main-new).
-
-**2025.3.8.** KL term issue in veRL [fixed](https://github.com/volcengine/verl/pull/179/files). Default advantage estimator changed to GAE (PPO) for more stable training.
-
-**2025.1.27.** Initial RAGEN release. [Post](https://x.com/wzihanw/status/1884092805598826609).
-
-</details>
-
-
-## Getting Started
+## Setup
 
 ```bash
-git clone https://github.com/mll-lab-nu/RAGEN.git
-cd RAGEN
+git clone <this-repo>
+cd LatentReasoning
 conda create -n ragen python=3.12 -y && conda activate ragen
 bash scripts/setup_ragen.sh
 ```
 
-Use `bash scripts/setup_ragen.sh --with-search` to include the search environment. For WebShop, see [docs/experiment_webshop_release.md](docs/experiment_webshop_release.md).
+---
 
-### The Four Reasoning Regimes
+## Step 1 -- Build the dual model
 
-<font color="#DC143C">RAGEN V2</font> diagnoses agent behavior along two axes — **within-input diversity** (Conditional Entropy) and **cross-input distinguishability** (Mutual Information) — yielding four distinct reasoning regimes:
+One-time setup that builds the expanded tokenizer + model.
 
-<p align="center"><img src="public/teaser.png" width="800px" alt="Four reasoning regimes: diverse reasoning, template collapse, compressed reasoning, low-entropy collapse" /></p>
-<p align="center" style="font-size: 15px; max-width: 800px; margin: 0 auto;">
-<b>Left:</b> Input-driven reasoning adapts to the current state; templated reasoning produces nearly identical responses across different inputs. <b>Right:</b> Four reasoning regimes along two axes — conditional entropy H(Z|X) (within-input diversity) and mutual information I(X;Z) (input dependence). Template collapse (high entropy, low MI) is invisible to existing entropy-based metrics.
-</p>
-
-**Train (no filter, default):**
 ```bash
-python train.py --config-name _2_sokoban
+bash scripts/build_dual_model.sh \
+    --base_model Qwen/Qwen2.5-3B-Instruct \
+    --out_dir ./checkpoints/dual_qwen_3b \
+    --think_missing clone_eos
 ```
 
-**Train with SNR-Adaptive Filtering (<font color="#DC143C">V2</font>, Top-p):**
+**`--think_missing` options:**
+
+| Option | Behaviour |
+|---|---|
+| `clone_eos` (recommended) | Adds `<think>`/`</think>` and initialises their embeddings from the model's EOS-like token + noise. Works across model families (Qwen, Llama-3, Phi-3, etc.). |
+| `add` | Adds tokens with random near-zero init. The model may never learn to emit `</think>`. |
+| `error` (default) | Fails if think tokens are not already in the vocabulary. |
+
+What happens internally:
+1. `scripts/build_dual_vocab.py` -- creates the dual tokenizer + `dual_vocab_meta.json` (records clone source when using `clone_eos`)
+2. `scripts/expand_model_to_dual_vocab.py` -- resizes the embedding table, initialises think-token rows from clone source (or random), copies latent rows from visible tokens
+3. `scripts/verify_dual_model.py` -- sanity checks
+
+The final model is saved to `./checkpoints/dual_qwen_3b`.
+
+---
+
+## Step 2 -- Train
+
+Use any RAGEN task config; override `model_path` to point to the dual model.
+
+**MetaMathQA (recommended for dual model):**
 ```bash
-python train.py --config-name _2_sokoban \
-  actor_rollout_ref.rollout_filter_strategy=top_p \
-  actor_rollout_ref.rollout.rollout_filter_value=0.9
+CUDA_VISIBLE_DEVICES=0 python train.py --config-name _5_metamathqa \
+    model_path=./checkpoints/dual_qwen_3b \
+    trainer.experiment_name=dual_metamathqa \
+    trainer.total_training_steps=400
 ```
 
-**Evaluate:**
+**Latent-only training:**
 ```bash
-python -m ragen.llm_agent.agent_proxy --config-name _2_sokoban
+CUDA_VISIBLE_DEVICES=0 python train.py --config-name _5_metamathqa \
+    model_path=./checkpoints/dual_qwen_3b \
+    trainer.experiment_name=dual_metamathqa_latentonly \
+    dual_vocab.latent_only=true \
+    trainer.total_training_steps=400
 ```
 
-SNR-Adaptive Filtering consistently improves training across algorithms, model scales, and modalities (green = gain from filtering):
+**Other environments (Sokoban, etc.):**
+```bash
+CUDA_VISIBLE_DEVICES=0 python train.py --config-name _2_sokoban \
+    model_path=./checkpoints/dual_qwen_3b \
+    trainer.experiment_name=dual_sokoban
+```
 
-<p align="center"><img src="public/main_results.png" width="800px" alt="Main results: filtering vs no filtering" /></p>
+---
 
-See the [Rollout Filtering Guide](docs/guide_rollout_filtering.md) for more filtering strategies (Top-k, linear mode, etc.).
+## Step 3 -- Eval
 
+The eval script auto-detects dual models and applies the vocabulary constraint.
 
-## Future Plans
+**Default eval (MetaMathQA):**
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m ragen.eval \
+    --config-name eval \
+    model_path=./checkpoints/dual_qwen_3b \
+    system.CUDA_VISIBLE_DEVICES=0
+```
 
-We are actively developing the next generation of RAGEN infrastructure and diagnostics, targeting a release in **late March 2026**.
+**Eval on static datasets (MATH, GSM8K, MMLU):**
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m ragen.eval \
+    --config-name eval \
+    model_path=./checkpoints/dual_qwen_3b \
+    system.CUDA_VISIBLE_DEVICES=0 \
+    es_manager.train.env_configs.tags='["MATH"]' \
+    es_manager.train.env_configs.n_groups='[8]' \
+    es_manager.val.env_configs.tags='["MATH"]' \
+    es_manager.val.env_configs.n_groups='[32]'
+```
 
-**Infrastructure**
-- [ ] **Async rollout engine** 
-- [ ] **HTTP-based environment interface** 
-- [ ] **Layered Env Wrapper** 
-- [ ] **Optional environment dependencies** 
+**Available static env tags** (defined in `config/envs.yaml`):
 
-**Diagnostics & Training Quality**
-- [ ] **Expanded benchmark suite** to stress-test diagnostics across diverse, real-world agent tasks
-- [ ] **Extended MI diagnostic dashboard**, including richer WandB visualizations for entropy, MI proxy, and gradient decomposition over training
-- [ ] **RL training metrics guide**, including a practitioner's blog on how to read training signals (reward distribution, entropy, MI, gradient norms) and act on them before committing to a full run
+| Tag | Dataset |
+|---|---|
+| `MATH` | hendrycks competition math (`nlile/hendrycks-MATH-benchmark`) |
+| `StaticMetaMathQA` | MetaMathQA via the generic StaticEnv |
+| `MetamathQA` | MetaMathQA via the dedicated env |
 
-**Framework**
-- [ ] Update full documentation for <font color="#DC143C">RAGEN V2</font>
-- [ ] Multi-modal agent support (building upon [VAGEN](https://github.com/RAGEN-AI/VAGEN))
-- [ ] Public leaderboard for benchmark results
+**Eval a trained checkpoint:**
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m ragen.eval \
+    --config-name eval \
+    model_path=./checkpoints/dual_metamathqa/global_step_400 \
+    system.CUDA_VISIBLE_DEVICES=0
+```
 
+---
 
-## Documentation
+## Config reference
 
-- [Full Documentation](https://ragen-doc.readthedocs.io/) *(We will release an updated version soon.)*
-- [Rollout Filtering Guide](docs/guide_rollout_filtering.md)
-- [MI Metrics Reference](docs/reference_mutual_information_metrics.md)
-- Adding Custom Environments — Gym-compatible interface, see `config/envs.yaml` and [documentation](https://ragen-doc.readthedocs.io/)
-- Experiment reproduction: [Main Table](docs/experiment_main_table.md) | [Intervention Sweep](docs/experiment_intervention_sweep.md) | [FrozenLake](docs/experiment_frozen_lake_slipper_sweep.md) | [Sokoban Gradient](docs/experiment_sokoban_gradient_analysis.md) | [Search](docs/experiment_search.md) | [DeepCoder](docs/experiment_deepcoder.md) | [WebShop](docs/experiment_webshop_release.md)
+| Override | Effect |
+|---|---|
+| `model_path=./checkpoints/dual_qwen_3b` | Use the dual model |
+| `dual_vocab.latent_only=true` | Train loss only on latent (think-phase) tokens |
+| `actor_rollout_ref.rollout.response_length=800` | Longer responses (useful since latent tokens are hidden) |
+| `agent_proxy.enable_think=true` | Keep `<think>` tags enabled (default) |
 
+---
 
-## Awesome Work Powered or Inspired by RAGEN
+## How dual-vocab works at runtime
 
-- [ROLL](https://github.com/alibaba/ROLL): Efficient Scaling Library for RL with LLMs ![GitHub Repo stars](https://img.shields.io/github/stars/alibaba/ROLL?style=social)
-- [VAGEN](https://github.com/RAGEN-AI/VAGEN): Training Visual Agents with multi-turn RL ![GitHub Repo stars](https://img.shields.io/github/stars/RAGEN-AI/VAGEN?style=social)
-- [Search-R1](https://github.com/PeterGriffinJin/Search-R1): Train LLMs to reason and call a search engine with RL ![GitHub Repo stars](https://img.shields.io/github/stars/PeterGriffinJin/Search-R1?style=social)
-- [ZeroSearch](https://github.com/Alibaba-nlp/ZeroSearch): Incentivize LLM search capability without searching ![GitHub Repo stars](https://img.shields.io/github/stars/Alibaba-nlp/ZeroSearch?style=social)
-- [Agent-R1](https://github.com/AgentR1/Agent-R1): Training Powerful LLM Agents with End-to-End RL
-- [OpenManus-RL](https://github.com/OpenManus/OpenManus-RL): RL tuning for LLM agents ![GitHub Repo stars](https://img.shields.io/github/stars/OpenManus/OpenManus-RL?style=social)
-- [MetaSpatial](https://github.com/PzySeere/MetaSpatial): Reinforcing 3D Spatial Reasoning in VLMs ![GitHub Repo stars](https://img.shields.io/github/stars/PzySeere/MetaSpatial?style=social)
-- [s3](https://github.com/pat-jj/s3): Efficient Yet Effective Search Agent Training via RL
+Once `model_path` points to a directory containing `dual_vocab_meta.json`:
 
+- **Rollout** (`VllmWrapperWg`): a per-request vLLM logits processor is injected. During `<think>`, only latent tokens `[V, V+L)` + `</think>` + EOS are allowed. After `</think>`, only visible tokens `[0, V)` + EOS are allowed.
+- **Training** (`ContextManager`): the loss mask accounts for latent tokens. With `latent_only=true`, gradients only flow through latent token positions.
 
-## Contributors
+---
 
-[**Zihan Wang**\*](https://zihanwang314.github.io/), [**Kangrui Wang**\*](https://jameskrw.github.io/), [**Qineng Wang**\*](https://qinengwang-aiden.github.io/), [**Pingyue Zhang**\*](https://williamzhangsjtu.github.io/), [**Linjie Li**\*](https://scholar.google.com/citations?user=WR875gYAAAAJ&hl=en), [**Zhengyuan Yang**](https://zyang-ur.github.io/), [**Xing Jin**](https://openreview.net/profile?id=~Xing_Jin3), [**Kefan Yu**](https://www.linkedin.com/in/kefan-yu-22723a25b/en/), [**Minh Nhat Nguyen**](https://www.linkedin.com/in/menhguin/?originalSubdomain=sg), [**Licheng Liu**](https://x.com/liulicheng10), [**Eli Gottlieb**](https://www.linkedin.com/in/eli-gottlieb1/), [**Yiping Lu**](https://2prime.github.io), [**Kyunghyun Cho**](https://kyunghyuncho.me/), [**Jiajun Wu**](https://jiajunwu.com/), [**Li Fei-Fei**](https://profiles.stanford.edu/fei-fei-li), [**Lijuan Wang**](https://www.microsoft.com/en-us/research/people/lijuanw/), [**Yejin Choi**](https://homes.cs.washington.edu/~yejin/), [**Manling Li**](https://limanling.github.io/)
+## Built on RAGEN
 
-\*Equal Contribution.
+This project is built on top of [RAGEN](https://github.com/mll-lab-nu/RAGEN) (Reasoning Agent), a flexible RL framework for training reasoning agents. RAGEN provides:
 
+- **StarPO** (State-Thinking-Actions-Reward Policy Optimization) for multi-turn trajectory-level RL training
+- **10+ built-in environments**: Sokoban, FrozenLake, WebShop, DeepCoder, SearchQA, Lean, Bandit, Countdown, MetaMathQA, Sudoku
+- **V2 diagnostics**: SNR-Adaptive Filtering and mutual-information-based reasoning collapse detection
 
-## Acknowledgements
+For the full RAGEN documentation, see:
+- [RAGEN V2 paper](https://ragen-ai.github.io/v2)
+- [RAGEN V1 paper](https://arxiv.org/abs/2504.20073)
+- [RAGEN documentation](https://ragen-doc.readthedocs.io/)
 
-We thank the [DeepSeek](https://github.com/deepseek-ai/DeepSeek-R1) team for early conceptual inspirations. We are grateful to the [veRL](https://github.com/volcengine/verl) team for infrastructure support. We thank the [TinyZero](https://github.com/Jiayi-Pan/TinyZero) team for discoveries that informed our initial exploration. We appreciate insightful discussions with Han Liu, Xinyu Xing, Li Erran Li, John Schulman, Akari Asai, Eiso Kant, Lu Lu, Runxin Xu, Huajian Xin, Zijun Liu, Weiyi Liu, Weimin Wu, Yibo Wen, Jiarui Liu, Lorenzo Xiao, Ishan Mukherjee, Anabella Isaro, Haosen Sun, How-Yeh Wan, Lester Xue, Matthew Khoriaty, Haoxiang Sun, Jiajun Liu.
-
-For <font color="#DC143C">RAGEN V2</font>, we additionally thank Yuxiang Lin and Kyunghyun Cho for their support.
-
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=mll-lab-nu/ragen&type=Date)](https://www.star-history.com/#mll-lab-nu/ragen&Date)
-
-
-## Citation
+### RAGEN citation
 
 ```bibtex
 @misc{ragen-v2,

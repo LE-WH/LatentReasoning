@@ -1,5 +1,6 @@
+import os
 import numpy as np
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 import re
 import random
 from typing import Dict, Any, Optional, List, Tuple, Callable
@@ -14,12 +15,17 @@ class StaticEnv(BaseLanguageBasedEnv):
     """
     def __init__(self, config: StaticEnvConfig):
         super(StaticEnv, self).__init__()
-        
+
         self.config = config
         dataset_config=getattr(config, "dataset_config", None)
         if dataset_config is None:
             dataset_config=REGISTERD_STATIC_ENV[self.config.dataset_name]["config"]
-        self.dataset = load_dataset(**dataset_config, cache_dir=self.config.cache_dir)
+        # Try load_from_disk for locally saved datasets, fall back to load_dataset
+        local_path = os.path.join(self.config.cache_dir, self.config.dataset_name)
+        if os.path.isdir(local_path):
+            self.dataset = load_from_disk(local_path)
+        else:
+            self.dataset = load_dataset(**dataset_config, cache_dir=self.config.cache_dir)
         
         if self.config.split is None:
             self.split = list(self.dataset.keys())[0]
@@ -65,6 +71,9 @@ class StaticEnv(BaseLanguageBasedEnv):
         }
         
         return observation, reward, done, info
+
+    def render(self, mode='text'):
+        return self.current_question
 
 
 if __name__ == "__main__":

@@ -64,6 +64,57 @@ def process_gpqa(item: Dict[str, Any]) -> Tuple[str, str]:
     answer = extract_answer_from_text(item["Correct Answer"])
     return question, answer
 
+def extract_boxed_answer(solution: str) -> str:
+    """Extract the final \\boxed{...} answer from a MATH solution."""
+    idx = solution.rfind("\\boxed{")
+    if idx == -1:
+        return solution.strip()
+    depth = 0
+    start = idx + len("\\boxed{")
+    for i in range(start, len(solution)):
+        if solution[i] == '{':
+            depth += 1
+        elif solution[i] == '}':
+            if depth == 0:
+                return solution[start:i].strip()
+            depth -= 1
+    return solution[start:].strip()
+
+def process_math(item: Dict[str, Any]) -> Tuple[str, str]:
+    """Process hendrycks/competition_math dataset item."""
+    question = item["problem"]
+    answer = extract_boxed_answer(item["solution"])
+    return question, answer
+
+def compute_score_math(prediction: str, label: str) -> Dict[str, Any]:
+    """Score MATH answers by extracting boxed content and normalizing."""
+    # Try to extract boxed answer from prediction
+    if "\\boxed{" in prediction:
+        pred_answer = extract_boxed_answer(prediction)
+    else:
+        pred_answer = extract_answer_from_text(prediction)
+
+    norm_pred = normalize_text(pred_answer)
+    norm_label = normalize_text(label)
+
+    is_correct = norm_pred == norm_label
+    is_valid = len(norm_pred) > 0
+
+    # Also try numeric comparison as fallback
+    if not is_correct:
+        pred_match = re.search(r'(-?\d+(?:\.\d+)?)', pred_answer)
+        label_match = re.search(r'(-?\d+(?:\.\d+)?)', label)
+        if pred_match and label_match:
+            try:
+                is_correct = float(pred_match.group(0)) == float(label_match.group(0))
+            except ValueError:
+                pass
+
+    return {
+        "is_correct": is_correct,
+        "is_valid": is_valid,
+    }
+
 # ====== Scoring Functions ======
 
 def compute_score_exact_match(prediction: str, label: str) -> Dict[str, Any]:
@@ -173,4 +224,11 @@ REGISTERD_STATIC_ENV = {
     #     "processor": process_gpqa,
     #     "compute_score": compute_score_exact_match
     # }
+    "math": {
+        "config": {
+            "path": "nlile/hendrycks-MATH-benchmark",
+        },
+        "processor": process_math,
+        "compute_score": compute_score_math
+    },
 }

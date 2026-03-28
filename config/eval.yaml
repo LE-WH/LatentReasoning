@@ -49,9 +49,9 @@ actor_rollout_ref:
       logprobs: 20 # return top20 logprobs
 
 agent_proxy:
-  context_window_mode: "full"  # "full" | "limited_multi_turn" | "single_turn"
+  context_window_mode: "single_turn"  # "full" | "limited_multi_turn" | "single_turn"
   max_context_window: -1
-  max_turn: 5
+  max_turn: 1
   action_sep: "||"
   max_actions_per_turn: 2
   use_turn_scores: False
@@ -66,13 +66,13 @@ es_manager:
     env_groups: 8
     group_size: 16
     env_configs:
-      tags: ["CoordSokoban"]
+      tags: ["MetamathQA"]
       n_groups: [8]
   val:
     env_groups: 32
     group_size: 16
     env_configs:
-      tags: ["CoordSokoban"]
+      tags: ["MetamathQA"]
       n_groups: [32]
 
 ctx_manager:

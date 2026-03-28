@@ -1,0 +1,11 @@
+CUDA_VISIBLE_DEVICES=0 python train.py --config-name _5_metamathqa \
+      model_path=./checkpoints/dual_qwen_4B_thinking \
+      trainer.experiment_name=dual_4b_math_logprob \
+      es_manager.train.env_configs.tags='["MATH_LogProb"]' \
+      es_manager.train.env_configs.n_groups='[8]' \
+      es_manager.val.env_configs.tags='["MATH"]' \
+      es_manager.val.env_configs.n_groups='[512]' \
+      agent_proxy.max_turn=1 \
+      actor_rollout_ref.rollout.response_length=800 \
+      actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+      system.CUDA_VISIBLE_DEVICES=0

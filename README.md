@@ -111,7 +111,8 @@ CUDA_VISIBLE_DEVICES=0 python -m ragen.eval \
 
 | Tag | Dataset |
 |---|---|
-| `MATH` | hendrycks competition math (`nlile/hendrycks-MATH-benchmark`) |
+| `MATH` | hendrycks competition math (`nlile/hendrycks-MATH-benchmark`), binary reward |
+| `MATH_LogProb` | same dataset, continuous log-prob reward (requires scorer server) |
 | `GSM8K` | grade school math (`openai/gsm8k`) |
 | `StaticMetaMathQA` | MetaMathQA via the generic StaticEnv |
 | `MetamathQA` | MetaMathQA via the dedicated env |
@@ -198,6 +199,55 @@ Configs live in `config/sft/`. Key settings in `base.yaml`:
 | Epochs | 3 (base), 1 (concise) |
 | Max length | 2048 |
 | Precision | bf16 |
+
+---
+
+## Continuous reward (log-prob scorer)
+
+Instead of binary 0/1 correctness, the log-prob scorer computes `mean log P(gold_answer | prompt + CoT)` -- a continuous reward that measures how well the reasoning trajectory supports the correct answer. This provides smoother gradients for RL training.
+
+Migrated from [scalable-latent-reasoning](https://github.com/...).
+
+### How it works
+
+1. The model generates a response with `<think>latent tokens...</think>answer`
+2. The scorer extracts the latent prefix (up to `</think>`)
+3. It feeds `prompt + latent_prefix` into the model and computes the mean token log-probability of the gold answer
+4. Higher score (closer to 0) = the reasoning makes the correct answer more predictable
+
+Reward range: typically `[-10, 0]`, with `-100.0` for invalid inputs and a `-2.0` penalty if `</think>` is missing.
+
+### Usage
+
+**Terminal 1 -- start the scorer server:**
+```bash
+CUDA_VISIBLE_DEVICES=1 python -m ragen.reward.scorer_server \
+    --model_dir ./checkpoints/dual_qwen_4B_thinking \
+    --port 8009
+```
+
+**Terminal 2 -- run RL training with log-prob reward:**
+```bash
+CUDA_VISIBLE_DEVICES=0 python train.py --config-name _5_metamathqa \
+    model_path=./checkpoints/dual_qwen_4B_thinking \
+    trainer.experiment_name=dual_4b_math_logprob \
+    es_manager.train.env_configs.tags='["MATH_LogProb"]' \
+    es_manager.train.env_configs.n_groups='[8]' \
+    es_manager.val.env_configs.tags='["MATH"]' \
+    es_manager.val.env_configs.n_groups='[512]' \
+    agent_proxy.max_turn=1 \
+    actor_rollout_ref.rollout.response_length=800 \
+    system.CUDA_VISIBLE_DEVICES=0
+```
+
+Note: use `MATH_LogProb` for train (continuous reward) and `MATH` for val (binary accuracy for clean metrics).
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `SCORER_URL` | `http://127.0.0.1:8009` | Scorer server endpoint |
+| `SCORER_TIMEOUT` | `120` | HTTP request timeout (seconds) |
 
 ---
 

@@ -206,6 +206,18 @@ custom_envs:
       cache_dir: "./data"
       split: "test"
 
+  MATH_LogProb:
+    env_type: logprob_static
+    max_actions_per_traj: 1
+    env_instruction: "You are solving competition math problems. Provide your final answer in the format <answer>YOUR_ANSWER</answer>."
+    max_tokens: 5000
+    parallel_friendly: false
+    max_workers: 1
+    env_config:
+      dataset_name: "math"
+      cache_dir: "./data"
+      split: "test"
+
   StaticMetaMathQA:
     env_type: static
     max_actions_per_traj: 1

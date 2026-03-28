@@ -20,6 +20,7 @@ from .rubikscube.config import RubiksCube2x2Config
 from .rubikscube.env import RubiksCube2x2Env
 from .static.config import StaticEnvConfig
 from .static.env import StaticEnv
+from ragen.reward.logprob_reward_env import LogProbRewardEnv
 
 
 REGISTERED_ENVS = {
@@ -34,6 +35,7 @@ REGISTERED_ENVS = {
     'game_2048': Game2048Env,
     'rubikscube': RubiksCube2x2Env,
     'static': StaticEnv,
+    'logprob_static': LogProbRewardEnv,
 }
 
 REGISTERED_ENV_CONFIGS = {
@@ -48,6 +50,7 @@ REGISTERED_ENV_CONFIGS = {
     'game_2048': Game2048EnvConfig,   
     'rubikscube': RubiksCube2x2Config,
     'static': StaticEnvConfig,
+    'logprob_static': StaticEnvConfig,
 }
 
 try:

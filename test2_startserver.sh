@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=0 python -m ragen.reward.scorer_server   --model_dir ./checkpoints/dual_qwen_4B_thinking  --port 8009 --dtype bfloat16     

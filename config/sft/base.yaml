@@ -1,0 +1,47 @@
+# SFT training base configuration
+# Usage: python -m sft.train --config-path ../config/sft --config-name gsm8k_direct
+
+# === Model ===
+model:
+  path: Qwen/Qwen2.5-3B-Instruct
+  max_length: 2048
+  cache_dir: ./data
+
+# === LoRA ===
+lora:
+  enabled: true
+  rank: 64
+  alpha: 128
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+# === Training ===
+training:
+  learning_rate: 2.0e-5
+  num_epochs: 3
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 4
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  output_dir: results/sft/${benchmark}/${method}
+  bf16: true
+  logging_steps: 10
+  save_strategy: "epoch"
+  gradient_checkpointing: false
+  use_chat_template: true       # false = raw text format (aligned with paper)
+
+# === Data ===
+data:
+  path: data/sft/${benchmark}_${method}.jsonl
+  max_samples: null  # null = use all
+
+# === Eval ===
+eval:
+  num_samples: -1  # -1 = use all test samples
+  batch_size: 32
+  temperature: 0.0
+  max_new_tokens: 512
+  model_path: null  # null = use merged LoRA model or full-ft output_dir
+
+# === Task ===
+benchmark: gsm8k   # gsm8k | deepcoder
+method: direct     # direct | concise

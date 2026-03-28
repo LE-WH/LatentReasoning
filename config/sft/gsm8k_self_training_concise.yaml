@@ -1,0 +1,38 @@
+# Self-Training Elicits Concise Reasoning (arxiv 2502.20122)
+# Repo: https://github.com/TergelMunkhbat/concise-reasoning
+#
+# GSM8K FS-BoN augmented training: zero-shot + few-shot sampling → shortest correct → full FT
+#
+# All hyperparameters aligned with the paper's config/trainer/sft.yaml
+# and SFTTrainingConfig defaults. Effective batch size = 4 GPUs × 4 = 16 (same as paper).
+# gradient_checkpointing=true due to hardware (L40S 46GB vs paper's A100 80GB), no effect on results.
+
+defaults:
+  - base
+  - _self_
+
+benchmark: gsm8k
+method: concise
+
+model:
+  max_length: 2048
+
+data:
+  path: data/sft/gsm8k_concise_xml.jsonl
+
+training:
+  learning_rate: 1.0e-5       # paper: 1e-5
+  num_epochs: 1                # paper: 1
+  lr_scheduler_type: constant  # paper: constant
+  warmup_ratio: 0.0            # paper: 0 (HF default)
+  weight_decay: 0.0            # paper: 0 (HF default)
+  per_device_batch_size: 4     # paper: 16 on 1 GPU; we use 4 × 4 GPUs = 16
+  gradient_accumulation_steps: 1  # paper: 1
+  gradient_checkpointing: true    # paper: false (hardware limitation)
+  logging_steps: 16            # paper: 16
+  seed: 0                     # paper: 0
+  use_chat_template: true      # use chat template for RAGEN compatibility (eval + RL)
+  output_dir: results/sft/gsm8k/qwen2.5-3b-self-training-concise
+
+lora:
+  enabled: false               # paper: full fine-tuning

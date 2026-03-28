@@ -7,3 +7,20 @@ hydra:
  
 trainer:
   experiment_name: sokoban-main
+
+actor_rollout_ref:
+  rollout:
+    name: sglang       
+    enable_soft_thinking: true
+    max_topk: 30
+    think_end_str: "</think>"
+    val_kwargs:
+      do_sample: True
+      temperature: 1
+      top_p: 1.0
+      top_k: 30
+      min_p: 0.0
+      after_thinking_temperature: 0.6
+      after_thinking_top_p: 0.95
+      after_thinking_top_k: 30
+      after_thinking_min_p: 0.0

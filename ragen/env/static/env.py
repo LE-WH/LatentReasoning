@@ -51,6 +51,9 @@ class StaticEnv(BaseLanguageBasedEnv):
         
         return self.current_question
         
+    def render(self, mode: str = 'text'):
+        return self.current_question
+
     def step(self, action):
         """Take a step in the environment with the given action (answer)."""
         score_result = self.compute_score(action,self.correct_answer)

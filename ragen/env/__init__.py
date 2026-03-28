@@ -18,8 +18,8 @@ from .game_2048.config import Game2048EnvConfig
 from .game_2048.env import Game2048Env
 from .rubikscube.config import RubiksCube2x2Config
 from .rubikscube.env import RubiksCube2x2Env
-from .static.env import StaticEnv
 from .static.config import StaticEnvConfig
+from .static.env import StaticEnv
 
 
 REGISTERED_ENVS = {

@@ -36,6 +36,14 @@ bash scripts/build_dual_model.sh \
     --think_missing clone_eos
 ```
 
+```bash
+bash scripts/build_dual_model.sh \
+    --base_model Qwen/Qwen3-4B-Thinking-2507 \
+    --out_dir ./checkpoints/dual_qwen_4b_thinking \
+    --think_missing clone_eos
+```
+
+
 **`--think_missing` options:**
 
 | Option | Behaviour |

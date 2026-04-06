@@ -18,6 +18,12 @@ SYSTEM_PROMPTS = {
         "Write your reasoning in <think> tags, then give your final answer in <answer> tags. "
         "Example: <think>Step-by-step reasoning...</think><answer>42</answer>"
     ),
+    "math": (
+        "You are solving a competition math problem. "
+        "Read the problem carefully and solve it step by step. "
+        "Write your reasoning in <think> tags, then give your final answer in <answer> tags. "
+        "Example: <think>Step-by-step reasoning...</think><answer>\\frac{1}{2}</answer>"
+    ),
 }
 
 DEFAULT_NUM_FEW_SHOT = 8

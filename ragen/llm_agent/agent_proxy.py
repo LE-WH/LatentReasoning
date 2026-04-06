@@ -67,6 +67,7 @@ class VllmWrapperWg:  # Thi is a developing class for eval and test
             enable_chunked_prefill=ro_config.enable_chunked_prefill,
             enable_prefix_caching=True,
             trust_remote_code=True,
+            distributed_executor_backend="mp",
         )
         if log_stats_interval is not None:
             llm_kwargs["log_stats_interval"] = log_stats_interval

@@ -21,7 +21,10 @@ apply_patches()
 from vllm import LLM, SamplingParams
 
 from datasets import load_dataset
-from ragen.env.static.utils import process_gsm8k, compute_score_numeric
+from ragen.env.static.utils import (
+    process_gsm8k, compute_score_numeric,
+    process_math, compute_score_math,
+)
 from .prompts import (
     DEFAULT_NUM_FEW_SHOT,
     extract_think_answer,
@@ -70,7 +73,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Sample CoT responses for Concise SFT")
     parser.add_argument("--benchmark", type=str, required=True,
-                        choices=["gsm8k"])
+                        choices=["gsm8k", "math"])
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--gpu", type=str, default="0")
     parser.add_argument("--num-questions", type=int, default=-1,
@@ -135,16 +138,25 @@ def main() -> None:
         logger.info(f"Loaded {len(exemplars)} few-shot exemplars from {args.few_shot_path}")
 
     # --- Load benchmark data ---
-    ds = load_dataset("openai/gsm8k", name="main", split="train", cache_dir=args.cache_dir)
+    BENCHMARK_DATASETS = {
+        "gsm8k": {"path": "openai/gsm8k", "name": "main", "processor": process_gsm8k, "scorer": compute_score_numeric},
+        "math": {"path": "nlile/hendrycks-MATH-benchmark", "name": None, "processor": process_math, "scorer": compute_score_math},
+    }
+    bench_cfg = BENCHMARK_DATASETS[args.benchmark]
+    ds_kwargs = {"path": bench_cfg["path"], "split": "train", "cache_dir": args.cache_dir}
+    if bench_cfg["name"]:
+        ds_kwargs["name"] = bench_cfg["name"]
+    ds = load_dataset(**ds_kwargs)
+    scorer = bench_cfg["scorer"]
     raw_data = []
     for idx, item in enumerate(ds):
         if args.num_questions > 0 and idx >= args.num_questions:
             break
-        question, answer = process_gsm8k(item)
+        question, answer = bench_cfg["processor"](item)
         raw_data.append({
             "question": question,
             "answer": answer,
-            "source_id": f"gsm8k_train_{idx}",
+            "source_id": f"{args.benchmark}_train_{idx}",
         })
     logger.info(f"Loaded {len(raw_data)} questions from {args.benchmark}")
     if args.num_shards > 1:
@@ -235,7 +247,7 @@ def main() -> None:
 
                 # Score: compare extracted answer with gold answer
                 if answer is not None:
-                    score = compute_score_numeric(answer, item["answer"])
+                    score = scorer(answer, item["answer"])
                     is_correct = score["is_correct"]
                 else:
                     is_correct = False

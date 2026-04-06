@@ -7,7 +7,7 @@ hydra:
     - pkg://verl.trainer.config
 
 system:
-  CUDA_VISIBLE_DEVICES: "0"
+  CUDA_VISIBLE_DEVICES: "0,1,2,3"
 
 seed:
   train: 10000

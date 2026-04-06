@@ -1,0 +1,43 @@
+# Self-Training Elicits Concise Reasoning — MATH benchmark
+# Adapted from gsm8k_self_training_concise.yaml for MATH (hendrycks).
+# MATH problems are harder and require longer reasoning, so max_length
+# and max_think_tokens are increased.
+
+defaults:
+  - base
+  - _self_
+
+benchmark: math
+method: concise
+
+model:
+  path: /u/wliu19/LatentReasoning/checkpoints/dual_qwen_4b_thinking
+  max_length: 4096
+
+data:
+  path: data/sft/math_concise_xml.jsonl
+
+training:
+  learning_rate: 1.0e-5
+  num_epochs: 3
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 2
+  gradient_checkpointing: true
+  logging_steps: 10
+  save_strategy: "steps"
+  save_steps: 200
+  save_total_limit: 3
+  seed: 42
+  use_chat_template: true
+  bf16: true
+  output_dir: results/sft/math/dual-qwen-4b-thinking-concise
+  report_to: "wandb"
+  run_name: "sft-math-concise-dual-qwen-4b-thinking"
+  load_best_model_at_end: true
+  metric_for_best_model: "loss"
+
+lora:
+  enabled: false

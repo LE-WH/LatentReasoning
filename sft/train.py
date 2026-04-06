@@ -226,10 +226,21 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Training format: {'chat template' if use_chat_template else 'raw text (paper-aligned)'}")
     validate_samples(raw_samples, use_chat_template)
 
-    dataset = tokenize_with_response_mask(
+    full_dataset = tokenize_with_response_mask(
         raw_samples, tokenizer, cfg.model.max_length, use_chat_template=use_chat_template
     )
-    logger.info(f"Tokenized dataset: {len(dataset)} samples")
+    logger.info(f"Tokenized dataset: {len(full_dataset)} samples")
+
+    # Split into train/eval if load_best_model_at_end is enabled
+    eval_dataset = None
+    eval_ratio = cfg.training.get("eval_ratio", 0.05)
+    if cfg.training.get("load_best_model_at_end", False):
+        split = full_dataset.train_test_split(test_size=eval_ratio, seed=cfg.training.get("seed", 42))
+        dataset = split["train"]
+        eval_dataset = split["test"]
+        logger.info(f"Split: {len(dataset)} train, {len(eval_dataset)} eval")
+    else:
+        dataset = full_dataset
 
     # Sanity check: print first 3 examples
     if is_main_process():
@@ -257,7 +268,8 @@ def main(cfg: DictConfig) -> None:
 
     # --- Training ---
     output_dir = cfg.training.output_dir
-    training_args = TrainingArguments(
+    save_steps = cfg.training.get("save_steps", None)
+    training_kwargs = dict(
         output_dir=output_dir,
         num_train_epochs=cfg.training.num_epochs,
         per_device_train_batch_size=cfg.training.per_device_batch_size,
@@ -271,15 +283,29 @@ def main(cfg: DictConfig) -> None:
         save_strategy=cfg.training.save_strategy,
         seed=cfg.training.get("seed", 42),
         gradient_checkpointing=cfg.training.gradient_checkpointing,
-        report_to="none",
+        report_to=cfg.training.get("report_to", "none"),
         remove_unused_columns=False,
         ddp_find_unused_parameters=False,
+        load_best_model_at_end=cfg.training.get("load_best_model_at_end", False),
+        metric_for_best_model=cfg.training.get("metric_for_best_model", "loss"),
+        save_total_limit=cfg.training.get("save_total_limit", None),
     )
+    if save_steps is not None:
+        training_kwargs["save_steps"] = save_steps
+    if cfg.training.get("load_best_model_at_end", False):
+        training_kwargs["eval_strategy"] = cfg.training.save_strategy
+        if save_steps is not None:
+            training_kwargs["eval_steps"] = save_steps
+    run_name = cfg.training.get("run_name", None)
+    if run_name:
+        training_kwargs["run_name"] = run_name
+    training_args = TrainingArguments(**training_kwargs)
 
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
+        eval_dataset=eval_dataset,
         data_collator=SFTDataCollator(tokenizer),
     )
 

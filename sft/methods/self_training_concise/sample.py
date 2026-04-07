@@ -11,9 +11,12 @@ Supports two modes:
 import argparse
 import json
 import logging
+import os
 import random
 import time
 from pathlib import Path
+
+os.environ.setdefault("VLLM_USE_V1", "0")  # V0 engine needed for per-request logits processors
 
 from sft.compat import apply_patches
 apply_patches()
@@ -25,8 +28,11 @@ from ragen.env.static.utils import (
     process_gsm8k, compute_score_numeric,
     process_math, compute_score_math,
 )
+from ragen.dual_vocab.utils import is_dual_model, load_meta
+from ragen.dual_vocab.constraint import make_vllm_logits_processor
 from .prompts import (
     DEFAULT_NUM_FEW_SHOT,
+    _LATENT_RE,
     extract_think_answer,
     get_system_prompt,
 )
@@ -69,8 +75,6 @@ def build_few_shot_messages(
 
 
 def main() -> None:
-    import os
-
     parser = argparse.ArgumentParser(description="Sample CoT responses for Concise SFT")
     parser.add_argument("--benchmark", type=str, required=True,
                         choices=["gsm8k", "math"])
@@ -184,12 +188,27 @@ def main() -> None:
         enable_prefix_caching=True,
     )
 
+    # --- Dual-vocab logits constraint (if applicable) ---
+    logits_processors = None
+    if is_dual_model(args.model):
+        dual_meta = load_meta(args.model)
+        logits_processors = [make_vllm_logits_processor(
+            V=dual_meta["V"],
+            think_end_id=dual_meta["think_end_token_id"],
+            eos_id=tokenizer.eos_token_id,
+        )]
+        logger.info(
+            "Dual-vocab model detected — logits constraint enabled "
+            "(V=%d, think_end_id=%d)", dual_meta["V"], dual_meta["think_end_token_id"],
+        )
+
     sampling_params = SamplingParams(
         temperature=args.temperature,
         top_p=args.top_p,
         top_k=args.top_k,
         max_tokens=args.max_tokens,
         n=args.samples_per_question,
+        logits_processors=logits_processors,
     )
 
     # --- Build prompts ---
@@ -257,10 +276,16 @@ def main() -> None:
                     total_correct += 1
 
                 # Token count used for shortest-response selection.
-                think_token_count = (
-                    len(tokenizer.encode(think, add_special_tokens=False))
-                    if think else 0
-                )
+                # For dual-vocab models, count latent tokens in raw text
+                # (those ARE the thinking); otherwise count visible think text.
+                latent_count = len(_LATENT_RE.findall(text))
+                if latent_count > 0:
+                    think_token_count = latent_count
+                else:
+                    think_token_count = (
+                        len(tokenizer.encode(think, add_special_tokens=False))
+                        if think else 0
+                    )
 
                 sample_results.append({
                     "sample_idx": k,

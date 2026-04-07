@@ -10,9 +10,10 @@ cd "$ROOT_DIR"
 
 GPUS="${GPUS:-0,1,2,3}"
 NUM_SHARDS=4
-MODEL="${MODEL:-/u/wliu19/LatentReasoning/checkpoints/dual_qwen_4b_thinking}"
+MODEL="${MODEL:-/workspace/LatentReasoning/checkpoints/dual_qwen_4b_thinking}"
 TRAIN_NPROC="${TRAIN_NPROC:-4}"
 MAX_THINK_TOKENS="${MAX_THINK_TOKENS:-1023}"
+NUM_QUESTIONS="${NUM_QUESTIONS:--1}"  # set to small number (e.g. 50) for testing
 
 echo "============================================================"
 echo "SFT Pipeline — MATH (XML format)"
@@ -35,6 +36,7 @@ for i in $(seq 0 $((NUM_SHARDS-1))); do
         --max-model-len 4096 \
         --num-shards $NUM_SHARDS \
         --shard-id $i \
+        --num-questions $NUM_QUESTIONS \
         --output "data/sft/cot_samples/math_cot_xml_zero-shot_shard$(printf '%02d' $i)of$(printf '%02d' $NUM_SHARDS).jsonl" &
 done
 wait
@@ -67,6 +69,7 @@ for i in $(seq 0 $((NUM_SHARDS-1))); do
         --few-shot-path data/sft/cot_samples/math_xml_few_shot_exemplars.json \
         --num-shards $NUM_SHARDS \
         --shard-id $i \
+        --num-questions $NUM_QUESTIONS \
         --output "data/sft/cot_samples/math_cot_xml_few-shot_shard$(printf '%02d' $i)of$(printf '%02d' $NUM_SHARDS).jsonl" &
 done
 wait

@@ -11,7 +11,7 @@ benchmark: math
 method: concise
 
 model:
-  path: /u/wliu19/LatentReasoning/checkpoints/dual_qwen_4b_thinking
+  path: /workspace/LatentReasoning/checkpoints/dual_qwen_4b_thinking
   max_length: 4096
 
 data:

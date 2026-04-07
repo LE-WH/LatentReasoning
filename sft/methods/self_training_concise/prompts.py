@@ -9,6 +9,13 @@ Code:  https://github.com/TergelMunkhbat/concise-reasoning
 
 import re
 
+_LATENT_RE = re.compile(r"<\|latent_\d+\|>")
+
+
+def strip_latent_tokens(text: str) -> str:
+    """Remove <|latent_N|> tokens from model output."""
+    return _LATENT_RE.sub("", text)
+
 
 SYSTEM_PROMPTS = {
     "gsm8k": (
@@ -30,17 +37,34 @@ DEFAULT_NUM_FEW_SHOT = 8
 
 
 def extract_think_answer(text: str) -> tuple[str | None, str | None]:
-    """Extract <think> and <answer> content from model output."""
-    answer_match = re.search(r"<answer>(.*?)</answer>", text, re.DOTALL)
+    """Extract <think> and <answer> content from model output.
+
+    Latent tokens (``<|latent_N|>``) are stripped before matching so that
+    dual-vocab model outputs are handled correctly.  For dual-vocab models
+    the "think" phase is encoded entirely as latent tokens — the visible
+    output typically starts with ``</think>`` followed by the answer.  In
+    that case we treat the text between ``</think>`` and ``<answer>`` as the
+    visible reasoning (the latent tokens *are* the actual thinking).
+    """
+    clean = strip_latent_tokens(text)
+
+    answer_match = re.search(r"<answer>(.*?)</answer>", clean, re.DOTALL)
     answer = answer_match.group(1).strip() if answer_match else None
 
-    think_match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
+    think_match = re.search(r"<think>(.*?)</think>", clean, re.DOTALL)
     if think_match:
         think = think_match.group(1).strip()
     else:
-        # Fallback: text between <think> and <answer> (unclosed think tag)
-        fallback = re.search(r"<think>(.*?)<answer>", text, re.DOTALL)
-        think = fallback.group(1).strip() if fallback else None
+        # Dual-vocab fallback: latent tokens replaced the <think> content,
+        # so visible text starts with </think>.  Treat text between
+        # </think> and <answer> as the visible reasoning summary.
+        dv_match = re.search(r"</think>(.*?)<answer>", clean, re.DOTALL)
+        if dv_match:
+            think = dv_match.group(1).strip() or "(latent)"
+        else:
+            # Legacy fallback: unclosed <think> tag
+            fallback = re.search(r"<think>(.*?)<answer>", clean, re.DOTALL)
+            think = fallback.group(1).strip() if fallback else None
 
     return think, answer
 

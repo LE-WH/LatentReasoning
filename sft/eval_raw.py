@@ -86,17 +86,17 @@ def main():
     )
     sampling_params = SamplingParams(temperature=0.0, max_tokens=512)
 
-    # Build prompts with chat template but paper-style system prompt
-    # (This matches the old eval.py behavior that produced 81.7% base accuracy)
+    # Paper's evaluation format (--prompt direct):
+    # Raw text, no chat template, no system prompt.
+    # For Qwen: just the raw question text (no BOS needed).
+    # For other models: BOS + raw question text.
+    is_qwen = "qwen" in type(tokenizer).__name__.lower()
     prompts = []
     for sample in test_samples:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": sample["question"]},
-        ]
-        prompt = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        if is_qwen:
+            prompt = sample["question"]
+        else:
+            prompt = tokenizer.bos_token + sample["question"]
         prompts.append(prompt)
 
     logger.info(f"Generating {len(prompts)} responses...")

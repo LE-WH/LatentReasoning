@@ -1,7 +1,8 @@
 """Prompt templates and answer extraction for Concise SFT sampling.
 
-Uses RAGEN-compatible XML format (<think>/<answer> tags) for compatibility
-with RAGEN's evaluation and RL training pipelines.
+Supports two formats:
+  - xml: RAGEN-compatible (<think>/<answer> tags)
+  - paper: Original paper format ('The answer is')
 
 Paper: https://arxiv.org/abs/2502.20122
 Code:  https://github.com/TergelMunkhbat/concise-reasoning
@@ -17,7 +18,7 @@ def strip_latent_tokens(text: str) -> str:
     return _LATENT_RE.sub("", text)
 
 
-SYSTEM_PROMPTS = {
+XML_SYSTEM_PROMPTS = {
     "gsm8k": (
         "You are solving a math word problem. "
         "Read the problem carefully and compute the final numerical answer. "
@@ -30,6 +31,14 @@ SYSTEM_PROMPTS = {
         "Read the problem carefully and solve it step by step. "
         "Write your reasoning in <think> tags, then give your final answer in <answer> tags. "
         "Example: <think>Step-by-step reasoning...</think><answer>\\frac{1}{2}</answer>"
+    ),
+}
+
+PAPER_SYSTEM_PROMPTS = {
+    "gsm8k": (
+        "Your task is to answer the question below. "
+        "Give step by step reasoning before you answer, and when you're ready to answer, "
+        "please use the format 'The answer is'"
     ),
 }
 
@@ -69,6 +78,26 @@ def extract_think_answer(text: str) -> tuple[str | None, str | None]:
     return think, answer
 
 
-def get_system_prompt(benchmark: str) -> str:
+def extract_numeric_answer(text: str) -> tuple[str | None, str | None]:
+    """Extract answer from 'The answer is ...' style text (paper format).
+
+    Returns (think, answer) tuple to match extract_think_answer signature.
+    """
+    think = text.strip()
+    parts = text.lower().split("answer is")
+    answer_flag = len(parts) > 1
+    candidate_text = parts[-1] if answer_flag else text.lower()
+    candidate_text = candidate_text.replace(",", "")
+    matches = re.findall(r"-?\d+\.?\d*", candidate_text)
+    if not matches:
+        return think, None
+    answer = matches[0] if answer_flag else matches[-1]
+    if re.match(r"^-?\d+\.\d+$", answer):
+        answer = answer.rstrip("0").rstrip(".")
+    return think, answer
+
+
+def get_system_prompt(benchmark: str, fmt: str = "xml") -> str:
     """Return system prompt for the benchmark."""
-    return SYSTEM_PROMPTS.get(benchmark, "")
+    prompts = XML_SYSTEM_PROMPTS if fmt == "xml" else PAPER_SYSTEM_PROMPTS
+    return prompts.get(benchmark, "")

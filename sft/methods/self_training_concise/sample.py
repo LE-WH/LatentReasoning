@@ -34,6 +34,7 @@ from .prompts import (
     DEFAULT_NUM_FEW_SHOT,
     _LATENT_RE,
     extract_think_answer,
+    extract_numeric_answer,
     get_system_prompt,
 )
 
@@ -57,18 +58,24 @@ def build_few_shot_messages(
     system_prompt: str,
     exemplars: list[dict],
     num_shots: int = DEFAULT_NUM_FEW_SHOT,
+    fmt: str = "xml",
 ) -> list[dict]:
-    """Build few-shot messages with XML-format exemplars."""
-    messages = [{"role": "system", "content": system_prompt}]
+    """Build few-shot messages with exemplars."""
+    # Paper format: no system prompt (matches original paper)
+    messages = [] if fmt == "paper" else [{"role": "system", "content": system_prompt}]
 
     selected = random.sample(exemplars, min(num_shots, len(exemplars)))
 
     for ex in selected:
         messages.append({"role": "user", "content": ex["question"]})
-        messages.append({
-            "role": "assistant",
-            "content": f"<think>\n{ex['reasoning']}\n</think>\n<answer>{ex['answer']}</answer>",
-        })
+        if "reasoning" in ex and "answer" in ex:
+            if fmt == "xml":
+                content = f"<think>\n{ex['reasoning']}\n</think>\n<answer>{ex['answer']}</answer>"
+            else:
+                content = f"{ex['reasoning']}\nThe answer is {ex['answer']}"
+        else:
+            content = ex.get("solution", "")
+        messages.append({"role": "assistant", "content": content})
 
     messages.append({"role": "user", "content": question})
     return messages
@@ -102,6 +109,8 @@ def main() -> None:
                         help="Total number of data shards for sampling")
     parser.add_argument("--num-few-shot", type=int, default=DEFAULT_NUM_FEW_SHOT,
                         help=f"Number of exemplars per prompt (default: {DEFAULT_NUM_FEW_SHOT})")
+    parser.add_argument("--prompt-format", type=str, default="xml", choices=["xml", "paper"],
+                        help="Prompt and extraction format: xml (<think>/<answer>) or paper ('The answer is')")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -212,17 +221,16 @@ def main() -> None:
     )
 
     # --- Build prompts ---
-    system_prompt = get_system_prompt(args.benchmark)
+    fmt = args.prompt_format
+    system_prompt = get_system_prompt(args.benchmark, fmt=fmt)
     prompts = []
     for item in raw_data:
         if exemplars is not None:
-            # Few-shot mode: inject exemplars as conversation turns
             messages = build_few_shot_messages(
                 item["question"], system_prompt, exemplars,
-                num_shots=args.num_few_shot,
+                num_shots=args.num_few_shot, fmt=fmt,
             )
         else:
-            # Zero-shot mode
             messages = build_zero_shot_messages(
                 item["question"], system_prompt
             )
@@ -253,9 +261,10 @@ def main() -> None:
             sample_results = []
             seen_thinks = set()  # For deduplication
 
+            extract_fn = extract_think_answer if fmt == "xml" else extract_numeric_answer
             for k, completion in enumerate(output.outputs):
                 text = completion.text
-                think, answer = extract_think_answer(text)
+                think, answer = extract_fn(text)
 
                 # Deduplication: skip if we've seen this exact think text
                 think_key = think.strip() if think else None

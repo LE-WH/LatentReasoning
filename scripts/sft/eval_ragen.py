@@ -18,5 +18,9 @@ if not hasattr(_tub.PreTrainedTokenizerBase, "all_special_tokens_extended"):
     _tub.PreTrainedTokenizerBase.all_special_tokens_extended = _all_special_tokens_extended
 
 # Run as if: python -m ragen.llm_agent.agent_proxy
-import runpy
-runpy.run_module("ragen.llm_agent.agent_proxy", run_name="__main__")
+# The if __name__ guard is required for vllm v1 engine which uses
+# multiprocessing spawn: without it, spawned subprocesses re-execute
+# module-level code and trigger a recursive spawn error.
+if __name__ == "__main__":
+    import runpy
+    runpy.run_module("ragen.llm_agent.agent_proxy", run_name="__main__")

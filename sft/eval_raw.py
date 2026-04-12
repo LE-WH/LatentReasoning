@@ -1,8 +1,11 @@
-"""SFT model evaluation with raw text prompt (paper-aligned).
+"""SFT model evaluation with raw text prompts.
 
-Uses the same prompt format as the Self-Training paper:
+Default mode uses the same prompt format as the Self-Training paper:
   system: "Your task is to answer the question below..."
   user: "Question: {question}\nSolution:"
+
+When ``--tokenskip-prompt`` is enabled, the script switches to the
+paper-faithful TokenSkip chat prompt used by the upstream Qwen evaluation.
 
 Usage:
     CUDA_VISIBLE_DEVICES=0 PYTHONPATH=. python -m sft.eval_raw \
@@ -23,32 +26,54 @@ apply_patches()
 from vllm import LLM, SamplingParams
 from datasets import load_dataset
 from ragen.env.static.utils import process_gsm8k, compute_score_numeric
-from sft.methods.self_training_concise.prompts import get_system_prompt
+from sft.methods.tokenskip.prompts import (
+    build_tokenskip_raw_chat_messages,
+    build_tokenskip_raw_question,
+    extract_boxed_or_numeric_answer,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (
-    "Your task is to answer the question below. "
-    "Give step by step reasoning before you answer, and when you're ready to answer, "
-    "please use the format 'The answer is'"
-)
+def build_tokenskip_eval_prompt(
+    tokenizer,
+    question: str,
+    compression_ratio: float,
+    *,
+    model_family: str,
+) -> str:
+    """Build the upstream-style TokenSkip evaluation prompt."""
+    family = (model_family or "qwen").lower()
+    if family == "qwen":
+        messages = build_tokenskip_raw_chat_messages(
+            question,
+            compression_ratio,
+            model_family=family,
+        )
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
 
+    if family == "llama3":
+        user_content = build_tokenskip_raw_question(question, None, model_family=family)
+        eos_token = tokenizer.eos_token or "<|eot_id|>"
+        bos_token = tokenizer.bos_token or ""
+        if compression_ratio < 1.0:
+            return (
+                f"{bos_token}<|start_header_id|>user<|end_header_id|>\n\n"
+                f"{user_content}\n"
+                f"{eos_token}{compression_ratio:g}{eos_token}{eos_token}"
+                "<|start_header_id|>assistant<|end_header_id|>\n\n"
+            )
+        return (
+            f"{bos_token}<|start_header_id|>user<|end_header_id|>\n\n"
+            f"{user_content}\n"
+            f"{eos_token}<|start_header_id|>assistant<|end_header_id|>\n\n"
+        )
 
-def extract_numeric_answer(text: str) -> str | None:
-    """Extract final numeric answer from 'The answer is ...' style text."""
-    import re
-    parts = text.lower().split("answer is")
-    answer_flag = len(parts) > 1
-    candidate_text = parts[-1] if answer_flag else text.lower()
-    candidate_text = candidate_text.replace(",", "")
-    matches = re.findall(r"-?\d+\.?\d*", candidate_text)
-    if not matches:
-        return None
-    answer = matches[0] if answer_flag else matches[-1]
-    if re.match(r"^-?\d+\.\d+$", answer):
-        answer = answer.rstrip("0").rstrip(".")
-    return answer
+    raise ValueError(f"Unsupported TokenSkip model family: {model_family}")
 
 
 def main():
@@ -57,6 +82,11 @@ def main():
     parser.add_argument("--num-samples", type=int, default=-1)
     parser.add_argument("--cache-dir", type=str, default="./data")
     parser.add_argument("--output", type=str, default=None)
+    parser.add_argument("--tokenskip-prompt", action="store_true", default=False,
+                        help="Use the TokenSkip raw prompt template")
+    parser.add_argument("--compression-ratio", type=float, default=1.0,
+                        help="Inline TokenSkip ratio conditioning for raw eval")
+    parser.add_argument("--model-family", type=str, default="qwen", choices=["qwen", "llama3"])
     args = parser.parse_args()
 
     # Load test data
@@ -86,17 +116,22 @@ def main():
     )
     sampling_params = SamplingParams(temperature=0.0, max_tokens=512)
 
-    # Paper's evaluation format (--prompt direct):
-    # Raw text, no chat template, no system prompt.
-    # For Qwen: just the raw question text (no BOS needed).
-    # For other models: BOS + raw question text.
     is_qwen = "qwen" in type(tokenizer).__name__.lower()
     prompts = []
     for sample in test_samples:
-        if is_qwen:
-            prompt = sample["question"]
+        if args.tokenskip_prompt:
+            prompt = build_tokenskip_eval_prompt(
+                tokenizer,
+                sample["question"],
+                args.compression_ratio,
+                model_family=args.model_family,
+            )
         else:
-            prompt = tokenizer.bos_token + sample["question"]
+            prompt_body = sample["question"]
+            if is_qwen:
+                prompt = prompt_body
+            else:
+                prompt = tokenizer.bos_token + prompt_body
         prompts.append(prompt)
 
     logger.info(f"Generating {len(prompts)} responses...")
@@ -116,7 +151,7 @@ def main():
         prediction = output.outputs[0].text
         num_tokens = len(output.outputs[0].token_ids)
 
-        answer = extract_numeric_answer(prediction)
+        answer = extract_boxed_or_numeric_answer(prediction)
         if answer is not None:
             score = compute_score_numeric(answer, sample["answer"])
             is_correct = score["is_correct"]
@@ -143,7 +178,12 @@ def main():
 
     print(f"\n{'='*60}")
     print(f"Model: {args.model}")
-    print(f"Prompt: raw text (paper-aligned)")
+    prompt_format = (
+        f"tokenskip_chat_template:{args.model_family}"
+        if args.tokenskip_prompt
+        else "raw_text"
+    )
+    print(f"Prompt: {prompt_format}")
     print(f"Samples: {len(test_samples)}")
     print(f"Correct: {correct}")
     print(f"Accuracy: {accuracy:.4f} ({accuracy*100:.1f}%)")
@@ -159,7 +199,9 @@ def main():
         summary = {
             "type": "summary",
             "model_path": args.model,
-            "prompt_format": "raw_text",
+            "prompt_format": prompt_format,
+            "tokenskip_prompt": args.tokenskip_prompt,
+            "compression_ratio": args.compression_ratio,
             "num_samples": len(test_samples),
             "correct": correct,
             "accuracy": accuracy,

@@ -255,11 +255,16 @@ def main(cfg: DictConfig) -> None:
     )
 
     if cfg.lora.enabled:
+        target_modules_cfg = cfg.lora.target_modules
+        if isinstance(target_modules_cfg, str):
+            target_modules = target_modules_cfg
+        else:
+            target_modules = OmegaConf.to_container(target_modules_cfg, resolve=True)
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=cfg.lora.rank,
             lora_alpha=cfg.lora.alpha,
-            target_modules=list(cfg.lora.target_modules),
+            target_modules=target_modules,
             lora_dropout=0.0,
         )
         model = get_peft_model(model, lora_config)
@@ -290,6 +295,8 @@ def main(cfg: DictConfig) -> None:
         metric_for_best_model=cfg.training.get("metric_for_best_model", "loss"),
         save_total_limit=cfg.training.get("save_total_limit", None),
     )
+    if "greater_is_better" in cfg.training:
+        training_kwargs["greater_is_better"] = cfg.training.greater_is_better
     if save_steps is not None:
         training_kwargs["save_steps"] = save_steps
     if cfg.training.get("load_best_model_at_end", False):

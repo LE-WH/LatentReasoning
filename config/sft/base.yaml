@@ -27,6 +27,7 @@ training:
   logging_steps: 10
   save_strategy: "epoch"
   gradient_checkpointing: false
+  run_name: null
   use_chat_template: true       # false = raw text format (aligned with paper)
 
 # === Data ===
@@ -44,4 +45,4 @@ eval:
 
 # === Task ===
 benchmark: gsm8k   # gsm8k | deepcoder
-method: direct     # direct | concise
+method: direct     # direct | concise | tokenskip

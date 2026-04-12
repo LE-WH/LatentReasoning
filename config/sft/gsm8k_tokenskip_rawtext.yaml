@@ -1,0 +1,39 @@
+defaults:
+  - base
+  - _self_
+
+benchmark: gsm8k
+method: tokenskip
+
+model:
+  max_length: 2048
+
+data:
+  path: data/sft/gsm8k_tokenskip_rawtext.jsonl
+
+training:
+  learning_rate: 5.0e-5
+  num_epochs: 3
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.0
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: true
+  logging_steps: 10
+  save_strategy: "steps"
+  save_steps: 300
+  save_total_limit: 2
+  seed: 42
+  use_chat_template: true
+  load_best_model_at_end: true
+  eval_ratio: 0.1
+  metric_for_best_model: eval_loss
+  greater_is_better: false
+  output_dir: results/sft/gsm8k/qwen2.5-3b-tokenskip-rawtext
+
+lora:
+  enabled: true
+  rank: 8
+  alpha: 16
+  target_modules: all-linear

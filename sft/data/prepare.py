@@ -1,22 +1,11 @@
-"""Convert CoT samples into SFT training JSONL.
-
-Usage:
-    python -m sft.data.prepare \
-        --method concise \
-        --benchmark math \
-        --cot-samples-path data/sft/cot_samples/math_cot_zero-shot.jsonl \
-        --max-think-tokens 1023 \
-        --output data/sft/math_concise_xml.jsonl
-"""
+"""Convert method-specific intermediate data into SFT training JSONL."""
 
 import argparse
-import json
 import logging
-from pathlib import Path
 
 from datasets import load_dataset
 from ragen.env.static.utils import REGISTERD_STATIC_ENV
-from sft.methods.self_training_concise.select import ConciseMethod
+from sft.data.base import save_samples
 from sft.methods.self_training_concise.prompts import get_system_prompt
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -57,20 +46,9 @@ def load_raw_data(benchmark: str, cache_dir: str = "./data") -> list[dict]:
     return raw_data
 
 
-def sample_to_messages(question: str, response: str, benchmark: str) -> list[dict]:
-    """Convert a question + response into chat messages."""
-    system_prompt = get_system_prompt(benchmark)
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": question})
-    messages.append({"role": "assistant", "content": response})
-    return messages
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare SFT training data")
-    parser.add_argument("--method", type=str, required=True, choices=["concise", "direct"])
+    parser.add_argument("--method", type=str, required=True, choices=["concise", "direct", "tokenskip"])
     parser.add_argument("--benchmark", type=str, required=True, choices=list(DATASET_LOADERS.keys()))
     parser.add_argument("--cot-samples-path", type=str, default=None,
                         help="Comma-separated CoT sample files (required for concise)")
@@ -78,14 +56,25 @@ def main() -> None:
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--cache-dir", type=str, default="./data")
     parser.add_argument("--response-format", type=str, default="xml",
-                        choices=["xml", "paper"],
-                        help="xml: <think>/<answer> tags; paper: raw text")
+                        choices=["xml", "paper", "tokenskip_paper"],
+                        help="xml: RAGEN tags; paper: raw text; tokenskip_paper: boxed final answer")
+    parser.add_argument("--original-cot-path", type=str, default=None,
+                        help="TokenSkip original CoT jsonl")
+    parser.add_argument("--compressed-cot-dir", type=str, default=None,
+                        help="Directory containing TokenSkip compressed_ratio_*.jsonl files")
+    parser.add_argument("--ratio-pool", type=str, default="1.0,0.9,0.8,0.7,0.6,0.5",
+                        help="Comma-separated TokenSkip ratio pool")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="TokenSkip ratio sampling seed")
+    parser.add_argument("--model-family", type=str, default="qwen", choices=["qwen", "llama3"])
     args = parser.parse_args()
 
     raw_data = load_raw_data(args.benchmark, cache_dir=args.cache_dir)
     logger.info(f"Loaded {len(raw_data)} questions from {args.benchmark}")
 
     if args.method == "concise":
+        from sft.methods.self_training_concise.select import ConciseMethod
+
         method = ConciseMethod()
         samples = method.build_samples(
             args.benchmark,
@@ -95,31 +84,45 @@ def main() -> None:
         )
     elif args.method == "direct":
         from sft.methods.direct import DirectMethod
+
         method = DirectMethod()
         samples = method.build_samples(args.benchmark, raw_data)
+    elif args.method == "tokenskip":
+        from sft.methods.tokenskip.select import TokenSkipMethod
+
+        if args.response_format == "xml":
+            raise ValueError(
+                "TokenSkip currently only supports --response-format tokenskip_paper."
+            )
+        method = TokenSkipMethod()
+        samples = method.build_samples(
+            args.benchmark,
+            raw_data,
+            original_cot_path=args.original_cot_path,
+            compressed_cot_dir=args.compressed_cot_dir,
+            ratio_pool=args.ratio_pool,
+            seed=args.seed,
+            model_family=args.model_family,
+            fmt=args.response_format,
+        )
     else:
         raise ValueError(f"Unknown method: {args.method}")
 
     logger.info(f"Built {len(samples)} SFT samples")
+    if args.response_format == "xml":
+        system_prompt = get_system_prompt(args.benchmark)
+    elif args.method == "tokenskip" and args.response_format == "tokenskip_paper":
+        from sft.methods.tokenskip.prompts import get_raw_chat_system_prompt
 
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, "w") as f:
-        for sample in samples:
-            if args.response_format == "xml":
-                if sample.reasoning:
-                    response = f"<think>\n{sample.reasoning}\n</think>\n<answer>{sample.answer}</answer>"
-                else:
-                    response = f"<answer>{sample.answer}</answer>"
-            else:
-                # Paper raw text format (no XML tags)
-                if sample.reasoning:
-                    response = f"{sample.reasoning} The answer is {sample.answer}."
-                else:
-                    response = sample.answer
-
-            messages = sample_to_messages(sample.question, response, args.benchmark)
-            f.write(json.dumps({"messages": messages}, ensure_ascii=False) + "\n")
-
+        system_prompt = get_raw_chat_system_prompt()
+    else:
+        system_prompt = ""
+    save_samples(
+        samples,
+        args.output,
+        response_format=args.response_format,
+        system_prompt=system_prompt,
+    )
     logger.info(f"Saved {len(samples)} samples to {args.output}")
 
 

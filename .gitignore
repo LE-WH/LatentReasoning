@@ -122,3 +122,8 @@ log/
 
 # Search data (large files)
 search_data/
+
+# Slurm-related files
+slurm_logs/
+**/*.sbatch
+scripts/sft/watch_slurm_job.sh

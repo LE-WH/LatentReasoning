@@ -46,7 +46,7 @@ def get_ratio_boundary_token(
 
     family = (model_family or "qwen").lower()
     if family == "qwen":
-        return "<|eot_id|>"
+        return "<|im_end|>"
     if family == "llama3":
         return "<|eot_id|>"
     raise ValueError(f"Unsupported TokenSkip model family: {model_family}")
@@ -58,7 +58,7 @@ def build_inline_ratio_suffix(
     model_family: str = "qwen",
     boundary_token: str | None = None,
 ) -> str:
-    """Build an inline suffix such as ``<|eot_id|>0.5<|eot_id|>``."""
+    """Build an inline suffix such as ``<|im_end|>0.5<|im_end|>`` (Qwen) or ``<|eot_id|>0.5<|eot_id|>`` (Llama)."""
     value = normalize_compression_ratio(ratio)
     if value is None or abs(value - 1.0) < 1e-9:
         return ""

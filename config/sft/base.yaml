@@ -43,6 +43,10 @@ eval:
   max_new_tokens: 512
   model_path: null  # null = use merged LoRA model or full-ft output_dir
 
+# === Dual vocabulary ===
+dual_vocab:
+  enabled: false
+
 # === Task ===
 benchmark: gsm8k   # gsm8k | deepcoder
 method: direct     # direct | concise | tokenskip

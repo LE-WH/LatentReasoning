@@ -35,7 +35,7 @@ bash scripts/build_dual_model.sh \
     --out_dir ./checkpoints/dual_qwen_3b \
     --think_missing clone_eos
 ```
-
+ 
 ```bash
 bash scripts/build_dual_model.sh \
     --base_model Qwen/Qwen3-4B-Thinking-2507 \
@@ -207,6 +207,119 @@ Configs live in `config/sft/`. Key settings in `base.yaml`:
 | Epochs | 3 (base), 1 (concise) |
 | Max length | 2048 |
 | Precision | bf16 |
+
+---
+
+## TokenSkip: Compressed Reasoning with Ratio Conditioning
+
+Replicates [TokenSkip](https://arxiv.org/abs/2502.12067) on MATH using Qwen3-4B-Thinking, with an extension to the dual-vocabulary latent reasoning model. The model learns to produce variable-length chain-of-thought conditioned on an inline compression ratio.
+
+### Pipeline overview
+
+| Step | What | Script |
+|------|------|--------|
+| 1. Collect | Sample CoTs from the base model on MATH train | `sft.methods.tokenskip.collect` |
+| 2. Compress | Shorten CoTs with LLMLingua-2 at target ratios | `sft.methods.tokenskip.compress` |
+| 3. Prepare | Build SFT data with ratio conditioning tokens | `sft.data.prepare` |
+| 4. Train | LoRA fine-tune (standard or dual-vocab) | `sft.train` |
+| 5. Eval | Generate on MATH test, score accuracy | `sft.eval_raw` |
+
+The ratio signal is injected inline as `<|im_end|>{ratio}<|im_end|>` after the user message, training the model to control reasoning length.
+
+### Running the pipeline
+
+A single unified script handles both standard and dual-vocab models with configurable ratios.
+
+**Prerequisites:**
+```bash
+export LLMLINGUA_PATH=microsoft/llmlingua-2-xlm-roberta-large-meetingbank
+```
+
+**Standard model:**
+```bash
+LLMLINGUA_PATH=microsoft/llmlingua-2-xlm-roberta-large-meetingbank \
+WANDB_PROJECT=tokenskip-math \
+    bash scripts/sft/pipeline_tokenskip_math.sh
+```
+
+**Dual-vocab model:**
+```bash
+LLMLINGUA_PATH=microsoft/llmlingua-2-xlm-roberta-large-meetingbank \
+DUAL_MODEL=checkpoints/dual_qwen_4b_thinking \
+WANDB_PROJECT=tokenskip-math \
+    bash scripts/sft/pipeline_tokenskip_math.sh
+```
+
+**Custom ratios and GPUs:**
+```bash
+COMPRESS_RATIOS=0.2,0.4,0.6,0.8 \
+TRAIN_RATIOS=1.0,0.2,0.4,0.6,0.8 \
+EVAL_RATIOS=1.0,0.8,0.6,0.4,0.2 \
+GPUS=0,1 TRAIN_NPROC=2 \
+    bash scripts/sft/pipeline_tokenskip_math.sh
+```
+
+**Skip completed steps** (e.g. reuse collected CoTs, retrain only):
+```bash
+SKIP_COLLECT=1 SKIP_COMPRESS=1 SKIP_PREPARE=1 \
+DUAL_MODEL=checkpoints/dual_qwen_4b_thinking \
+    bash scripts/sft/pipeline_tokenskip_math.sh
+```
+
+**Smoke test (20 questions, 1 epoch):**
+```bash
+# Standard
+LLMLINGUA_PATH=microsoft/llmlingua-2-xlm-roberta-large-meetingbank \
+    bash scripts/sft/smoke_test_tokenskip_math.sh
+
+# Dual
+LLMLINGUA_PATH=microsoft/llmlingua-2-xlm-roberta-large-meetingbank \
+DUAL_MODEL=checkpoints/dual_qwen_4b_thinking \
+    bash scripts/sft/smoke_test_tokenskip_math.sh
+```
+
+**Standalone eval:**
+```bash
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=. python -m sft.eval_raw \
+    --model results/sft/math/<model_dir>/merged \
+    --benchmark math \
+    --tokenskip-prompt \
+    --compression-ratio 0.5 \
+    --output results/eval.jsonl \
+    --wandb-project tokenskip-math
+```
+
+### Output locations
+
+| Step | Path |
+|------|------|
+| 1. Collected CoTs | `data/sft/tokenskip/original/math/` |
+| 2. Compressed CoTs | `data/sft/tokenskip/compressed/math_raw/` |
+| 3. SFT data | `data/sft/math_tokenskip_rawtext.jsonl` |
+| 4. Model (standard) | `results/sft/math/qwen3-4b-thinking-tokenskip-standard/merged/` |
+| 4. Model (dual) | `results/sft/math/qwen3-4b-thinking-tokenskip-dual/merged/` |
+| 5. Eval results | `results/sft/math/.../eval/math_eval_ratio_{r}.jsonl` |
+
+### Results on MATH (500 test samples, multi-rate training with ratios 1.0, 0.7, 0.5, 0.3)
+
+| Model | Ratio | Accuracy | Avg Think Tokens | Avg Tok (correct) |
+|-------|-------|----------|------------------|-------------------|
+| Standard | 1.0 | 42.8% | 1530 | 1092 |
+| Standard | 0.7 | 52.6% | 1330 | 991 |
+| Standard | 0.5 | 51.6% | 1231 | 827 |
+| Standard | 0.3 | 44.0% | 1331 | 762 |
+| **Dual** | 1.0 | 43.2% | 1536 | 1121 |
+| **Dual** | 0.7 | 50.4% | 1291 | 889 |
+| **Dual** | **0.5** | **53.6%** | 1261 | 894 |
+| **Dual** | 0.3 | 51.2% | 1266 | 862 |
+
+**Observations:**
+- Dual-vocab matches standard at r=1.0 — latent tokens don't degrade quality.
+- Ratio conditioning works: lower ratios produce shorter, more concise CoTs with higher accuracy (compressed reasoning removes filler).
+- Dual r=0.5 achieves the best accuracy (53.6%), 10+ points above the r=1.0 baselines.
+- All models are trained on the same dataset; only the ratio in the eval prompt differs. The ratio signal shifts the model's reasoning *style* (verbose vs. concise) rather than setting a hard token budget.
+
+**Known limitation — modest length reduction.** Training data at r=0.3 averages ~350 tokens, but at eval the model produces ~1266 tokens. The ratio conditioning controls conciseness more than raw length. This is inherent to SFT: the model learns to *sound like* compressed reasoning, not to *stop at a target count*. Stronger length control would require RL with an explicit length penalty.
 
 ---
 

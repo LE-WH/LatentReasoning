@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 from pathlib import Path
 
 from datasets import load_dataset
@@ -16,7 +17,12 @@ apply_patches()
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
-from ragen.env.static.utils import compute_score_numeric, process_gsm8k
+from ragen.env.static.utils import (
+    compute_score_math,
+    compute_score_numeric,
+    process_gsm8k,
+    process_math,
+)
 from sft.methods.tokenskip.prompts import (
     build_tokenskip_raw_chat_messages,
     extract_raw_reasoning_and_answer,
@@ -25,23 +31,73 @@ from sft.methods.tokenskip.prompts import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+_BENCHMARK_REGISTRY: dict[str, dict] = {
+    "gsm8k": {
+        "path": "openai/gsm8k",
+        "name": "main",
+        "split": "train",
+        "processor": process_gsm8k,
+        "scorer": compute_score_numeric,
+    },
+    "math": {
+        "path": "nlile/hendrycks-MATH-benchmark",
+        "name": None,
+        "split": "train",
+        "processor": process_math,
+        "scorer": compute_score_math,
+    },
+}
 
-def load_questions(cache_dir: str, num_questions: int) -> list[dict]:
-    """Load GSM8K train questions."""
-    ds = load_dataset("openai/gsm8k", name="main", split="train", cache_dir=cache_dir)
+
+def load_questions(benchmark: str, cache_dir: str, num_questions: int) -> list[dict]:
+    """Load train questions for the given benchmark."""
+    reg = _BENCHMARK_REGISTRY[benchmark]
+    load_kwargs: dict = {"path": reg["path"], "split": reg["split"], "cache_dir": cache_dir}
+    if reg["name"]:
+        load_kwargs["name"] = reg["name"]
+    ds = load_dataset(**load_kwargs)
+    processor = reg["processor"]
     raw_data = []
     for idx, item in enumerate(ds):
         if num_questions > 0 and idx >= num_questions:
             break
-        question, answer = process_gsm8k(item)
+        question, answer = processor(item)
         raw_data.append(
             {
                 "question": question,
                 "answer": answer,
-                "source_id": f"gsm8k_train_{idx}",
+                "source_id": f"{benchmark}_train_{idx}",
             }
         )
     return raw_data
+
+
+def parse_think_output(text: str) -> tuple[str | None, str]:
+    """Parse model output generated after a ``<think>`` prompt prefix.
+
+    The generated text looks like:
+        ``reasoning...</think>\nvisible answer with \\boxed{}``
+
+    If ``</think>`` is present, returns (reasoning, answer_part).
+    If ``<think>...</think>`` is fully present (model echoed the open tag),
+    extracts the inner block.  Otherwise returns (None, original_text).
+    """
+    # Case 1: full <think>...</think> block in output (model echoed open tag)
+    m = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
+    if m:
+        reasoning = m.group(1).strip()
+        after = text[m.end():].strip()
+        return reasoning, after
+
+    # Case 2: we prefixed <think> in the prompt, output starts with reasoning
+    idx = text.find("</think>")
+    if idx != -1:
+        reasoning = text[:idx].strip()
+        after = text[idx + len("</think>"):].strip()
+        return reasoning, after
+
+    # No think block found
+    return None, text
 
 
 def build_messages(question: str, benchmark: str, fmt: str) -> list[dict]:
@@ -51,7 +107,7 @@ def build_messages(question: str, benchmark: str, fmt: str) -> list[dict]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Collect original CoTs for TokenSkip")
-    parser.add_argument("--benchmark", type=str, default="gsm8k", choices=["gsm8k"])
+    parser.add_argument("--benchmark", type=str, default="gsm8k", choices=list(_BENCHMARK_REGISTRY.keys()))
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--gpu", type=str, default="0")
     parser.add_argument("--cache-dir", type=str, default="./data")
@@ -70,7 +126,7 @@ def main() -> None:
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
-    raw_data = load_questions(args.cache_dir, args.num_questions)
+    raw_data = load_questions(args.benchmark, args.cache_dir, args.num_questions)
     if args.num_shards < 1:
         raise ValueError("--num-shards must be >= 1")
     if args.shard_id < 0 or args.shard_id >= args.num_shards:
@@ -112,21 +168,31 @@ def main() -> None:
             tokenize=False,
             add_generation_prompt=True,
         )
+        # Start the thinking block so the model enters reasoning mode
+        prompt += "<think>\n"
         prompts.append(prompt)
 
     outputs = llm.generate(prompts, sampling_params)
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
 
     extract_fn = extract_raw_reasoning_and_answer
+    scorer = _BENCHMARK_REGISTRY[args.benchmark]["scorer"]
 
     with open(args.output, "w") as f:
         for item, output in zip(raw_data, outputs):
             response_text = output.outputs[0].text
-            reasoning, answer = extract_fn(response_text)
+            # Split at </think>: reasoning is inside the think block,
+            # the visible part after </think> contains \boxed{answer}.
+            thinking, visible = parse_think_output(response_text)
+            if thinking is not None:
+                reasoning = thinking
+                _, answer = extract_fn(visible)
+            else:
+                reasoning, answer = extract_fn(visible)
 
             is_correct = False
             if answer is not None:
-                score = compute_score_numeric(answer, item["answer"])
+                score = scorer(answer, item["answer"])
                 is_correct = score["is_correct"]
 
             reasoning_token_count = len(

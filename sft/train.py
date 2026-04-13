@@ -3,6 +3,10 @@
 Loads chat-format jsonl data, applies response masking (loss only on assistant
 tokens), trains with LoRA via peft, then merges and saves a full checkpoint.
 
+Supports dual-vocabulary models: when ``dual_vocab.enabled`` is set in the
+config, the reasoning tokens inside the ``<think>...</think>`` block are
+remapped to their latent counterparts (visible_id + V).
+
 Usage:
     python -m sft.train --config-path ../config/sft --config-name gsm8k_direct
 """
@@ -10,6 +14,7 @@ Usage:
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 
 import hydra
@@ -147,6 +152,60 @@ def tokenize_with_response_mask(
     })
 
 
+def remap_think_to_latent(
+    dataset: Dataset,
+    tokenizer: AutoTokenizer,
+    meta: dict,
+) -> Dataset:
+    """Remap tokens inside the <think>...</think> region to latent IDs.
+
+    For each sample, find the think region in the response and shift those
+    token IDs by V (the visible vocab size) so they become latent tokens.
+    Both input_ids and labels are updated.
+    """
+    V = meta["V"]
+    think_end_id = meta["think_end_token_id"]
+
+    new_input_ids = []
+    new_labels = []
+
+    for i in range(len(dataset)):
+        input_ids = list(dataset[i]["input_ids"])
+        labels = list(dataset[i]["labels"])
+
+        # Find the response start (first non-masked label)
+        resp_start = 0
+        for j, lbl in enumerate(labels):
+            if lbl != -100:
+                resp_start = j
+                break
+
+        # Find </think> in the response region
+        think_end_pos = None
+        for j in range(resp_start, len(input_ids)):
+            if input_ids[j] == think_end_id:
+                think_end_pos = j
+                break
+
+        if think_end_pos is not None:
+            # Remap tokens in [resp_start, think_end_pos) to latent
+            for j in range(resp_start, think_end_pos):
+                vis_id = input_ids[j]
+                if 0 <= vis_id < V:
+                    input_ids[j] = vis_id + V
+                    if labels[j] != -100:
+                        labels[j] = vis_id + V
+
+        new_input_ids.append(input_ids)
+        new_labels.append(labels)
+
+    return Dataset.from_dict({
+        "input_ids": new_input_ids,
+        "labels": new_labels,
+        "attention_mask": dataset["attention_mask"],
+    })
+
+
 def log_masking_sanity_check(
     dataset: Dataset,
     tokenizer: AutoTokenizer,
@@ -231,6 +290,35 @@ def main(cfg: DictConfig) -> None:
     )
     logger.info(f"Tokenized dataset: {len(full_dataset)} samples")
 
+    # --- Dual-vocab remapping ---
+    dual_meta = None
+    dual_enabled = cfg.get("dual_vocab", {}).get("enabled", False)
+    if dual_enabled:
+        from ragen.dual_vocab.utils import load_meta
+        dual_meta = load_meta(cfg.model.path)
+        logger.info(
+            f"Dual-vocab enabled: V={dual_meta['V']}, L={dual_meta['L']}. "
+            f"Remapping think tokens to latent IDs."
+        )
+        full_dataset = remap_think_to_latent(full_dataset, tokenizer, dual_meta)
+
+        # Log latent remapping stats
+        V = dual_meta["V"]
+        total_latent = 0
+        total_response = 0
+        for i in range(len(full_dataset)):
+            ids = full_dataset[i]["input_ids"]
+            labels = full_dataset[i]["labels"]
+            n_latent = sum(1 for tid in ids if V <= tid < V + dual_meta["L"])
+            n_resp = sum(1 for lbl in labels if lbl != -100)
+            total_latent += n_latent
+            total_response += n_resp
+        logger.info(
+            f"Dual-vocab remapping stats: {total_latent} latent tokens "
+            f"out of {total_response} response tokens "
+            f"({total_latent/total_response*100:.1f}%) across {len(full_dataset)} samples"
+        )
+
     # Split into train/eval if load_best_model_at_end is enabled
     eval_dataset = None
     eval_ratio = cfg.training.get("eval_ratio", 0.05)
@@ -278,6 +366,8 @@ def main(cfg: DictConfig) -> None:
         output_dir=output_dir,
         num_train_epochs=cfg.training.num_epochs,
         per_device_train_batch_size=cfg.training.per_device_batch_size,
+        per_device_eval_batch_size=cfg.training.get("per_device_eval_batch_size", cfg.training.per_device_batch_size),
+        eval_accumulation_steps=cfg.training.get("eval_accumulation_steps", None),
         gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
         learning_rate=cfg.training.learning_rate,
         lr_scheduler_type=cfg.training.get("lr_scheduler_type", "linear"),
@@ -332,10 +422,20 @@ def main(cfg: DictConfig) -> None:
             merged_model = model.merge_and_unload()
             merged_model.save_pretrained(merged_dir)
             tokenizer.save_pretrained(merged_dir)
+            save_dir = merged_dir
         else:
             logger.info(f"Saving full model to {output_dir}")
             model.save_pretrained(output_dir)
             tokenizer.save_pretrained(output_dir)
+            save_dir = output_dir
+
+        # Copy dual_vocab_meta.json so the saved model is self-contained
+        if dual_meta is not None:
+            src_meta = Path(cfg.model.path) / "dual_vocab_meta.json"
+            if src_meta.exists():
+                dst_meta = Path(save_dir) / "dual_vocab_meta.json"
+                shutil.copy2(str(src_meta), str(dst_meta))
+                logger.info(f"Copied dual_vocab_meta.json to {dst_meta}")
 
     maybe_barrier()
 

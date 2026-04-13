@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from token_skip_utils import append_inline_ratio_condition, build_inline_ratio_suffix
+from sft.methods.tokenskip.utils import append_inline_ratio_condition, build_inline_ratio_suffix
 from sft.methods.tokenskip.prompts import build_tokenskip_raw_chat_messages
 from sft.methods.tokenskip.select import TokenSkipMethod
 

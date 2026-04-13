@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from token_skip_utils import append_inline_ratio_condition
+from sft.methods.tokenskip.utils import append_inline_ratio_condition
 
 
 RAW_REASONING_INSTRUCTION = (

@@ -40,8 +40,8 @@ class SFTSample:
         if fmt == "tokenskip_paper":
             if self.reasoning:
                 clean = _strip_xml_tags(self.reasoning)
-                return f"{clean}\n\nThe final answer is: $\\boxed{{{self.answer}}}$"
-            return f"The final answer is: $\\boxed{{{self.answer}}}$"
+                return f"{clean}\n\n</think>\n\nThe final answer is: $\\boxed{{{self.answer}}}$"
+            return f"</think>\n\nThe final answer is: $\\boxed{{{self.answer}}}$"
 
         if self.reasoning:
             clean = _strip_xml_tags(self.reasoning)

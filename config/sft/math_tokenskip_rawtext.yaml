@@ -1,0 +1,44 @@
+defaults:
+  - base
+  - _self_
+
+benchmark: math
+method: tokenskip
+
+model:
+  path: Qwen/Qwen3-4B-Thinking-2507
+  max_length: 4096
+
+data:
+  path: data/sft/math_tokenskip_rawtext.jsonl
+
+training:
+  learning_rate: 5.0e-5
+  num_epochs: 3
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.0
+  per_device_batch_size: 1
+  per_device_eval_batch_size: 1
+  eval_accumulation_steps: 4
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: true
+  logging_steps: 10
+  save_strategy: "steps"
+  save_steps: 100
+  save_total_limit: 2
+  seed: 42
+  use_chat_template: true
+  load_best_model_at_end: true
+  eval_ratio: 0.1
+  metric_for_best_model: eval_loss
+  greater_is_better: false
+  report_to: "wandb"
+  run_name: "sft-math-tokenskip-qwen3-4b-thinking"
+  output_dir: results/sft/math/qwen3-4b-thinking-tokenskip-rawtext
+
+lora:
+  enabled: true
+  rank: 8
+  alpha: 16
+  target_modules: all-linear

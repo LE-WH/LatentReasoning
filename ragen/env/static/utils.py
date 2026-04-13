@@ -100,13 +100,14 @@ def compute_score_math(prediction: str, label: str) -> Dict[str, Any]:
     is_correct = norm_pred == norm_label
     is_valid = len(norm_pred) > 0
 
-    # Also try numeric comparison as fallback
-    if not is_correct:
+    # Also try numeric comparison as fallback, but only when the label
+    # is a plain number.  LaTeX expressions like \frac{3}{56} contain
+    # digits that would produce spurious matches.
+    if not is_correct and re.fullmatch(r'-?\d+(?:\.\d+)?', label.strip()):
         pred_match = re.search(r'(-?\d+(?:\.\d+)?)', pred_answer)
-        label_match = re.search(r'(-?\d+(?:\.\d+)?)', label)
-        if pred_match and label_match:
+        if pred_match:
             try:
-                is_correct = float(pred_match.group(0)) == float(label_match.group(0))
+                is_correct = float(pred_match.group(0)) == float(label.strip())
             except ValueError:
                 pass
 

@@ -55,12 +55,18 @@ EVAL_RATIOS="${EVAL_RATIOS:-1.0,0.7,0.5,0.3}"
 BENCHMARK="math"
 
 # --- Derived paths ---
+# Build TAG: multirate when >1 train ratio, then -dual suffix if dual model
+NUM_TRAIN_RATIOS=$(echo "$TRAIN_RATIOS" | tr ',' '\n' | wc -l)
+if [ "$NUM_TRAIN_RATIOS" -gt 1 ]; then
+    TAG="multirate"
+else
+    TAG="rawtext"
+fi
 if [ -n "$DUAL_MODEL" ]; then
     TRAIN_MODEL="$DUAL_MODEL"
-    TAG="dual"
+    TAG="${TAG}-dual"
 else
     TRAIN_MODEL="$MODEL"
-    TAG="standard"
 fi
 
 DATA_DIR="data/sft/tokenskip"

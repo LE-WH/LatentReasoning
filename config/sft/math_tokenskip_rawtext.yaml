@@ -22,7 +22,7 @@ training:
   per_device_batch_size: 1
   per_device_eval_batch_size: 1
   eval_accumulation_steps: 4
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 32
   gradient_checkpointing: true
   logging_steps: 10
   save_strategy: "steps"

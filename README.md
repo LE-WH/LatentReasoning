@@ -218,13 +218,29 @@ Replicates [TokenSkip](https://arxiv.org/abs/2502.12067) on MATH using Qwen3-4B-
 
 | Step | What | Script |
 |------|------|--------|
-| 1. Collect | Sample CoTs from the base model on MATH train | `sft.methods.tokenskip.collect` |
+| 1. Collect | Sample `NUM_SAMPLES` CoTs per question on MATH train | `sft.methods.tokenskip.collect` |
 | 2. Compress | Shorten CoTs with LLMLingua-2 at target ratios | `sft.methods.tokenskip.compress` |
 | 3. Prepare | Build SFT data with ratio conditioning tokens | `sft.data.prepare` |
 | 4. Train | LoRA fine-tune (standard or dual-vocab) | `sft.train` |
 | 5. Eval | Generate on MATH test, score accuracy | `sft.eval_raw` |
 
 The ratio signal is injected inline as `<|im_end|>{ratio}<|im_end|>` after the user message, training the model to control reasoning length.
+
+**Pipeline env vars:**
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LLMLINGUA_PATH` | (required) | HF id / local path for LLMLingua-2 weights |
+| `NUM_SAMPLES` | `8` | Responses generated per question at collect time |
+| `SAMPLE_TEMP` | `0.7` | vLLM sampling temperature at collect time |
+| `COMPRESS_SHARDS` | `NUM_SHARDS` | Parallel LLMLingua-2 workers at step 2 (one GPU each) |
+| `COMPRESS_RATIOS` | `0.1,0.3,0.5,0.7` | Ratios passed to LLMLingua-2 at step 2 |
+| `TRAIN_RATIOS` | `1.0,0.1,0.3,0.5,0.7` | Ratio pool randomly sampled per training row |
+| `EVAL_RATIOS` | `1.0,0.7,0.5,0.3,0.1` | Ratios to evaluate at (one W&B run each) |
+| `MAX_COT_TOKENS` | `2000` | Drop CoTs longer than this before compression |
+| `GPUS` / `TRAIN_NPROC` / `NUM_SHARDS` | `0,1,2,3` / `4` / `4` | Parallelism knobs |
+| `DUAL_MODEL` | unset | Path to dual-vocab checkpoint (enables dual mode) |
+| `SKIP_COLLECT` / `SKIP_COMPRESS` / `SKIP_PREPARE` / `SKIP_TRAIN` | unset | Set to `1` to skip a step |
 
 ### Running the pipeline
 
@@ -258,6 +274,22 @@ EVAL_RATIOS=1.0,0.8,0.6,0.4,0.2 \
 GPUS=0,1 TRAIN_NPROC=2 \
     bash scripts/sft/pipeline_tokenskip_math.sh
 ```
+
+**Multi-sample collection (default) vs. paper-strict greedy.** The pipeline collects `NUM_SAMPLES=8` responses per question at `SAMPLE_TEMP=0.7` by default, giving ~8× more training data than the greedy setup in the original paper. Each sampled response gets a unique `source_id` (`..._s0`, `..._s1`, …) and independently flows through compression and ratio sampling.
+
+```bash
+# Cheaper / faster: 4 diverse samples
+NUM_SAMPLES=4 SAMPLE_TEMP=0.7 \
+LLMLINGUA_PATH=microsoft/llmlingua-2-xlm-roberta-large-meetingbank \
+    bash scripts/sft/pipeline_tokenskip_math.sh
+
+# Paper-strict (1 greedy response per question)
+NUM_SAMPLES=1 SAMPLE_TEMP=0.0 \
+LLMLINGUA_PATH=microsoft/llmlingua-2-xlm-roberta-large-meetingbank \
+    bash scripts/sft/pipeline_tokenskip_math.sh
+```
+
+Note: if you have pre-existing data collected before this change (source_ids without the `_s{idx}` suffix), run `rm -rf data/sft/tokenskip/` before re-running — the old format is incompatible with the new select/compress pipeline.
 
 **Skip completed steps** (e.g. reuse collected CoTs, retrain only):
 ```bash
@@ -320,6 +352,30 @@ CUDA_VISIBLE_DEVICES=0 PYTHONPATH=. python -m sft.eval_raw \
 - All models are trained on the same dataset; only the ratio in the eval prompt differs. The ratio signal shifts the model's reasoning *style* (verbose vs. concise) rather than setting a hard token budget.
 
 **Known limitation — modest length reduction.** Training data at r=0.3 averages ~350 tokens, but at eval the model produces ~1266 tokens. The ratio conditioning controls conciseness more than raw length. This is inherent to SFT: the model learns to *sound like* compressed reasoning, not to *stop at a target count*. Stronger length control would require RL with an explicit length penalty.
+
+### Compression demo (Gradio UI)
+
+An interactive tool for inspecting Step 2 of the TokenSkip pipeline — the LLMLingua-2 compression itself. Useful for getting an intuition for what a given rate actually produces before kicking off a full run.
+
+Two modes:
+- **Samples tab** — pick from preset math-style CoTs, slide the rate, see the compressed output, metrics, and a diff view with dropped tokens struck-through.
+- **Custom tab** — paste any text and compress it at an arbitrary rate.
+
+**Run locally:**
+```bash
+bash scripts/demo/run_compression_ui.sh               # http://localhost:7860
+PORT=8000 bash scripts/demo/run_compression_ui.sh     # custom port
+SHARE=1  bash scripts/demo/run_compression_ui.sh      # public *.gradio.live URL
+LLMLINGUA_PATH=/local/path bash scripts/demo/run_compression_ui.sh
+```
+
+**On a remote server (recommended):** use SSH port forwarding from your laptop:
+```bash
+ssh -N -L 7860:localhost:7860 user@your-server
+# then open http://localhost:7860 in your local browser
+```
+
+The UI includes a collapsible *"Why is the actual rate not exactly my target?"* explainer that covers the four real causes (threshold-not-top-k, chunking, tokenizer mismatch, asymmetric bias) and clarifies that the `force_tokens` / `force_reserve_digit` / `drop_consecutive` flags are only active in the pipeline's `llama3` branch, not here.
 
 ---
 

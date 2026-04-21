@@ -25,6 +25,7 @@ pylatexenc
 torchdata
 debugpy
 llmlingua
+gradio
 
 together
 anthropic

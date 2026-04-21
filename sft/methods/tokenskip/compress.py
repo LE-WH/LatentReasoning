@@ -57,7 +57,24 @@ def main() -> None:
         required=True,
         help="Path or HF id for LLMLingua-2 weights",
     )
+    parser.add_argument(
+        "--num-shards",
+        type=int,
+        default=1,
+        help="Shard the input across N workers for data parallelism.",
+    )
+    parser.add_argument(
+        "--shard-id",
+        type=int,
+        default=0,
+        help="0-indexed shard id (must be in [0, num_shards)).",
+    )
     args = parser.parse_args()
+
+    if args.num_shards < 1:
+        raise ValueError("--num-shards must be >= 1")
+    if args.shard_id < 0 or args.shard_id >= args.num_shards:
+        raise ValueError("--shard-id must be in [0, num_shards)")
 
     try:
         from llmlingua import PromptCompressor
@@ -68,6 +85,10 @@ def main() -> None:
         ) from exc
 
     original_records = load_jsonl(args.input)
+    # Shard the input before filtering so every worker sees a deterministic slice
+    # (filter statistics below are for the slice, not the full file).
+    if args.num_shards > 1:
+        original_records = original_records[args.shard_id::args.num_shards]
     skipped_for_length = 0
     filtered_records = []
     for record in original_records:
@@ -81,11 +102,16 @@ def main() -> None:
     original_records = [
         record for record in filtered_records
     ]
+    shard_label = (
+        f" (shard {args.shard_id}/{args.num_shards})"
+        if args.num_shards > 1 else ""
+    )
     logger.info(
-        "Loaded %d correct original CoTs after filtering (skipped_for_length=%d, max_cot_tokens=%d)",
+        "Loaded %d correct original CoTs after filtering (skipped_for_length=%d, max_cot_tokens=%d)%s",
         len(original_records),
         skipped_for_length,
         args.max_cot_tokens,
+        shard_label,
     )
 
     compressor = PromptCompressor(
@@ -124,7 +150,13 @@ def main() -> None:
             )
 
         ratio_tag = f"{ratio:g}"
-        out_path = output_dir / f"compressed_ratio_{ratio_tag}.jsonl"
+        if args.num_shards > 1:
+            shard_suffix = (
+                f"_shard{args.shard_id:02d}of{args.num_shards:02d}"
+            )
+            out_path = output_dir / f"compressed_ratio_{ratio_tag}{shard_suffix}.jsonl"
+        else:
+            out_path = output_dir / f"compressed_ratio_{ratio_tag}.jsonl"
         save_jsonl(compressed_records, str(out_path))
         logger.info("Saved ratio=%s compressed CoTs to %s", ratio_tag, out_path)
 

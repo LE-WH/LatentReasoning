@@ -389,6 +389,9 @@ def main(cfg: DictConfig) -> None:
         training_kwargs["greater_is_better"] = cfg.training.greater_is_better
     if save_steps is not None:
         training_kwargs["save_steps"] = save_steps
+    max_steps = cfg.training.get("max_steps", None)
+    if max_steps is not None and int(max_steps) > 0:
+        training_kwargs["max_steps"] = int(max_steps)
     if cfg.training.get("load_best_model_at_end", False):
         training_kwargs["eval_strategy"] = cfg.training.save_strategy
         if save_steps is not None:

@@ -118,9 +118,21 @@ def main() -> None:
     parser.add_argument("--max-model-len", type=int, default=4096)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--top-p", type=float, default=1.0)
+    parser.add_argument("--num-samples", type=int, default=1,
+                        help="Responses per question. Use with temperature > 0 for diversity.")
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--tensor-parallel", type=int, default=1)
     args = parser.parse_args()
+
+    if args.num_samples < 1:
+        raise ValueError("--num-samples must be >= 1")
+    if args.num_samples > 1 and args.temperature <= 0.0:
+        logger.warning(
+            "--num-samples=%d with temperature=%.3f will produce identical "
+            "responses. Set --temperature > 0 for diversity.",
+            args.num_samples, args.temperature,
+        )
 
     import os
 
@@ -155,9 +167,9 @@ def main() -> None:
     )
     sampling_params = SamplingParams(
         temperature=args.temperature,
-        top_p=1.0,
+        top_p=args.top_p,
         max_tokens=args.max_tokens,
-        n=1,
+        n=args.num_samples,
     )
 
     prompts = []
@@ -180,39 +192,46 @@ def main() -> None:
 
     with open(args.output, "w") as f:
         for item, output in zip(raw_data, outputs):
-            response_text = output.outputs[0].text
-            # Split at </think>: reasoning is inside the think block,
-            # the visible part after </think> contains \boxed{answer}.
-            thinking, visible = parse_think_output(response_text)
-            if thinking is not None:
-                reasoning = thinking
-                _, answer = extract_fn(visible)
-            else:
-                reasoning, answer = extract_fn(visible)
+            for sample_idx, sample in enumerate(output.outputs):
+                response_text = sample.text
+                # Split at </think>: reasoning is inside the think block,
+                # the visible part after </think> contains \boxed{answer}.
+                thinking, visible = parse_think_output(response_text)
+                if thinking is not None:
+                    reasoning = thinking
+                    _, answer = extract_fn(visible)
+                else:
+                    reasoning, answer = extract_fn(visible)
 
-            is_correct = False
-            if answer is not None:
-                score = scorer(answer, item["answer"])
-                is_correct = score["is_correct"]
+                is_correct = False
+                if answer is not None:
+                    score = scorer(answer, item["answer"])
+                    is_correct = score["is_correct"]
 
-            reasoning_token_count = len(
-                tokenizer.encode(reasoning or "", add_special_tokens=False)
-            )
+                reasoning_token_count = len(
+                    tokenizer.encode(reasoning or "", add_special_tokens=False)
+                )
 
-            record = {
-                "benchmark": args.benchmark,
-                "source_id": item["source_id"],
-                "question": item["question"],
-                "gold_answer": item["answer"],
-                "prompt_format": args.prompt_format,
-                "response_text": response_text.strip(),
-                "reasoning": reasoning,
-                "answer": answer,
-                "is_correct": is_correct,
-                "reasoning_token_count": reasoning_token_count,
-                "response_token_count": len(output.outputs[0].token_ids),
-            }
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                # Suffix source_id so each sample is independently addressable
+                # downstream (compress.py / select.py key by source_id).
+                source_id = f"{item['source_id']}_s{sample_idx}"
+
+                record = {
+                    "benchmark": args.benchmark,
+                    "source_id": source_id,
+                    "question_source_id": item["source_id"],
+                    "sample_index": sample_idx,
+                    "question": item["question"],
+                    "gold_answer": item["answer"],
+                    "prompt_format": args.prompt_format,
+                    "response_text": response_text.strip(),
+                    "reasoning": reasoning,
+                    "answer": answer,
+                    "is_correct": is_correct,
+                    "reasoning_token_count": reasoning_token_count,
+                    "response_token_count": len(sample.token_ids),
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     logger.info("Saved original CoTs to %s", args.output)
 

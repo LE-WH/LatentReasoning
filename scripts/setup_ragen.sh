@@ -88,7 +88,7 @@ setup_search() {
             exit 1
         fi
     fi
-
+a
     # Convert wiki-18.jsonl -> corpus.json
     local CORPUS_FILE="${INDICES_DIR}/corpus.json"
     local WIKI_JSONL="${WIKI_DIR}/wiki-18.jsonl"

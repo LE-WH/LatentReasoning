@@ -72,33 +72,36 @@ class TokenSkipMethod(BaseSFTMethod):
         rng = random.Random(seed)
         samples = []
         skipped = 0
+        unique_questions: set[str] = set()
 
         if fmt == "xml":
             raise ValueError(
                 "TokenSkip currently only supports response_format=tokenskip_paper."
             )
 
-        for item in raw_data:
-            source_id = item["source_id"]
+        # Iterate over *records* (one per sampled response) rather than raw
+        # questions, so collect-time n > 1 naturally produces n× training rows.
+        for source_id, record in original_records.items():
             ratio = rng.choice(ratio_pool)
+            question_text = record["question"]
+            gold_answer = record.get("gold_answer")
 
             if abs(ratio - 1.0) < 1e-9:
-                selected = original_records.get(source_id)
-                if selected is None:
-                    skipped += 1
-                    continue
+                selected = record
                 reasoning = selected["reasoning"]
-                answer = selected.get("answer") or item["answer"]
+                answer = selected.get("answer") or gold_answer
             else:
                 selected = compressed_by_ratio[ratio].get(source_id)
                 if selected is None:
+                    # Compressed record absent (e.g. CoT exceeded max length
+                    # filter in compress.py). Skip this (record, ratio) pair.
                     skipped += 1
                     continue
                 reasoning = selected["compressed_reasoning"]
-                answer = selected.get("answer") or item["answer"]
+                answer = selected.get("answer") or gold_answer
 
             question = build_tokenskip_raw_question(
-                item["question"],
+                question_text,
                 ratio,
                 model_family=model_family,
             )
@@ -115,14 +118,20 @@ class TokenSkipMethod(BaseSFTMethod):
                         "compression_ratio": ratio,
                         "prompt_format": fmt,
                         "conditioned": abs(ratio - 1.0) >= 1e-9,
+                        "question_source_id": record.get("question_source_id"),
+                        "sample_index": record.get("sample_index"),
                     },
                 )
             )
+            qsid = record.get("question_source_id") or source_id
+            unique_questions.add(qsid)
 
         logger.info(
-            "TokenSkip SFT: built %d samples from %d questions (skipped=%d)",
+            "TokenSkip SFT: built %d samples from %d unique questions "
+            "(%d correct records, %d skipped-for-missing-ratio)",
             len(samples),
-            len(raw_data),
+            len(unique_questions),
+            len(original_records),
             skipped,
         )
         return samples

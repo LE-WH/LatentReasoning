@@ -26,10 +26,13 @@
 #   MODEL            Base model for CoT collection      (default: Qwen/Qwen3-4B-Thinking-2507)
 #   DUAL_MODEL       Path to dual-vocab model           (default: unset = standard)
 #   TRAIN_NPROC      GPUs for training                  (default: 4)
-#   COMPRESS_RATIOS  LLMLingua compression ratios       (default: 0.3,0.5,0.7)
-#   TRAIN_RATIOS     Ratios in SFT data (includes 1.0)  (default: 1.0,0.3,0.5,0.7)
-#   EVAL_RATIOS      Ratios to evaluate at              (default: 1.0,0.7,0.5,0.3)
+#   COMPRESS_RATIOS  LLMLingua compression ratios       (default: 0.1,0.3,0.5,0.7)
+#   TRAIN_RATIOS     Ratios in SFT data (includes 1.0)  (default: 1.0,0.1,0.3,0.5,0.7)
+#   EVAL_RATIOS      Ratios to evaluate at              (default: 1.0,0.7,0.5,0.3,0.1)
 #   MAX_COT_TOKENS   Max reasoning tokens to keep       (default: 2000)
+#   NUM_SAMPLES      Responses per question at collect  (default: 8)
+#   SAMPLE_TEMP      Sampling temperature at collect    (default: 0.7)
+#   COMPRESS_SHARDS  Shards for parallel compression    (default: NUM_SHARDS)
 #   WANDB_PROJECT    W&B project name                   (default: unset)
 #   SKIP_COLLECT     Set to 1 to skip step 1            (default: unset)
 #   SKIP_COMPRESS    Set to 1 to skip step 2            (default: unset)
@@ -49,9 +52,12 @@ MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
 DUAL_MODEL="${DUAL_MODEL:-}"
 TRAIN_NPROC="${TRAIN_NPROC:-4}"
 MAX_COT_TOKENS="${MAX_COT_TOKENS:-2000}"
-COMPRESS_RATIOS="${COMPRESS_RATIOS:-0.3,0.5,0.7}"
-TRAIN_RATIOS="${TRAIN_RATIOS:-1.0,0.3,0.5,0.7}"
-EVAL_RATIOS="${EVAL_RATIOS:-1.0,0.7,0.5,0.3}"
+NUM_SAMPLES="${NUM_SAMPLES:-8}"
+SAMPLE_TEMP="${SAMPLE_TEMP:-0.7}"
+COMPRESS_RATIOS="${COMPRESS_RATIOS:-0.1,0.3,0.5,0.7}"
+COMPRESS_SHARDS="${COMPRESS_SHARDS:-$NUM_SHARDS}"
+TRAIN_RATIOS="${TRAIN_RATIOS:-1.0,0.1,0.3,0.5,0.7}"
+EVAL_RATIOS="${EVAL_RATIOS:-1.0,0.7,0.5,0.3,0.1}"
 BENCHMARK="math"
 
 # --- Derived paths ---
@@ -84,6 +90,8 @@ echo "  Base model:      ${MODEL}"
 if [ -n "$DUAL_MODEL" ]; then
 echo "  Dual model:      ${DUAL_MODEL}"
 fi
+echo "  Collect n/T:     ${NUM_SAMPLES} @ T=${SAMPLE_TEMP}"
+echo "  Compress shards: ${COMPRESS_SHARDS}"
 echo "  Compress ratios: ${COMPRESS_RATIOS}"
 echo "  Train ratios:    ${TRAIN_RATIOS}"
 echo "  Eval ratios:     ${EVAL_RATIOS}"
@@ -109,6 +117,8 @@ else
             --prompt-format paper \
             --max-tokens 4096 \
             --max-model-len 8192 \
+            --num-samples "$NUM_SAMPLES" \
+            --temperature "$SAMPLE_TEMP" \
             --num-shards "$NUM_SHARDS" \
             --shard-id "$i" \
             --output "${ORIGINAL_DIR}/${BENCHMARK}_raw_original_shard$(printf '%02d' "$i")of$(printf '%02d' "$NUM_SHARDS").jsonl" &
@@ -125,13 +135,35 @@ if [ "${SKIP_COMPRESS:-}" = "1" ]; then
     echo -e "\n== Step 2: SKIP =="
 else
     : "${LLMLINGUA_PATH:?Set LLMLINGUA_PATH (e.g. microsoft/llmlingua-2-xlm-roberta-large-meetingbank)}"
-    echo -e "\n== Step 2: Compress CoTs (ratios: ${COMPRESS_RATIOS}) =="
-    PYTHONPATH=. "$PYTHON" -m sft.methods.tokenskip.compress \
-        --input "$MERGED_JSONL" \
-        --output-dir "$COMPRESSED_DIR" \
-        --max-cot-tokens "$MAX_COT_TOKENS" \
-        --ratio-pool "$COMPRESS_RATIOS" \
-        --llmlingua-path "$LLMLINGUA_PATH"
+    if [ "$COMPRESS_SHARDS" -gt 1 ]; then
+        echo -e "\n== Step 2: Compress CoTs (ratios: ${COMPRESS_RATIOS}, sharded×${COMPRESS_SHARDS}) =="
+        for i in $(seq 0 $((COMPRESS_SHARDS-1))); do
+            GPU=$(echo "$GPUS" | cut -d',' -f$((i+1)))
+            CUDA_VISIBLE_DEVICES="$GPU" PYTHONPATH=. "$PYTHON" -m sft.methods.tokenskip.compress \
+                --input "$MERGED_JSONL" \
+                --output-dir "$COMPRESSED_DIR" \
+                --max-cot-tokens "$MAX_COT_TOKENS" \
+                --ratio-pool "$COMPRESS_RATIOS" \
+                --llmlingua-path "$LLMLINGUA_PATH" \
+                --num-shards "$COMPRESS_SHARDS" \
+                --shard-id "$i" &
+        done
+        wait
+        # Merge per-ratio shard files into the canonical filename select.py expects.
+        for ratio in $(echo "$COMPRESS_RATIOS" | tr ',' ' '); do
+            cat "${COMPRESSED_DIR}/compressed_ratio_${ratio}_shard"*.jsonl \
+                > "${COMPRESSED_DIR}/compressed_ratio_${ratio}.jsonl"
+            rm "${COMPRESSED_DIR}/compressed_ratio_${ratio}_shard"*.jsonl
+        done
+    else
+        echo -e "\n== Step 2: Compress CoTs (ratios: ${COMPRESS_RATIOS}) =="
+        PYTHONPATH=. "$PYTHON" -m sft.methods.tokenskip.compress \
+            --input "$MERGED_JSONL" \
+            --output-dir "$COMPRESSED_DIR" \
+            --max-cot-tokens "$MAX_COT_TOKENS" \
+            --ratio-pool "$COMPRESS_RATIOS" \
+            --llmlingua-path "$LLMLINGUA_PATH"
+    fi
 fi
 
 # ------------------------------------------------------------------

@@ -36,6 +36,7 @@ from sft.methods.tokenskip.prompts import (
     build_tokenskip_raw_question,
     extract_boxed_or_numeric_answer,
 )
+from sft.methods.sot.prompts import build_sot_eval_prompt
 
 _EVAL_BENCHMARKS: dict[str, dict] = {
     "gsm8k": {
@@ -112,12 +113,36 @@ def main():
     parser.add_argument("--compression-ratio", type=float, default=1.0,
                         help="Inline TokenSkip ratio conditioning for raw eval")
     parser.add_argument("--model-family", type=str, default="qwen", choices=["qwen", "llama3"])
+    parser.add_argument("--sot-prompt", action="store_true", default=False,
+                        help="Use Sketch-of-Thought (SoT) few-shot prompting (arXiv 2503.05179)")
+    parser.add_argument("--sot-paradigm", type=str, default="chunked_symbolism",
+                        choices=["chunked_symbolism"],
+                        help="SoT reasoning paradigm (only chunked_symbolism is supported for MATH)")
+    parser.add_argument("--suppress-thinking", action="store_true", default=False,
+                        help="Pre-fill <think></think> after generation prompt so a thinking model "
+                             "skips the native thinking phase (Qwen3-Thinking-2507).")
+    parser.add_argument("--sot-multiturn-exemplars", action="store_true", default=False,
+                        help="Render SoT exemplars as real assistant turns (with their <think> "
+                             "bodies intact) by hand-constructing ChatML, instead of inlining them "
+                             "as user-turn prose. Only meaningful with --sot-prompt.")
     parser.add_argument("--wandb-project", type=str, default=None,
                         help="W&B project name. If set, logs metrics and sample CoTs to wandb.")
     parser.add_argument("--wandb-run-name", type=str, default=None,
                         help="W&B run name (auto-generated if omitted)")
     parser.add_argument("--num-cot-samples", type=int, default=20,
                         help="Number of sample CoTs to log to wandb table")
+    parser.add_argument("--temperature", type=float, default=0.0,
+                        help="Sampling temperature (0.0 = greedy)")
+    parser.add_argument("--top-p", type=float, default=1.0,
+                        help="Nucleus sampling p (only used when temperature > 0)")
+    parser.add_argument("--top-k", type=int, default=-1,
+                        help="Top-k sampling (-1 disables; only used when temperature > 0)")
+    parser.add_argument("--presence-penalty", type=float, default=0.0,
+                        help="vLLM presence_penalty")
+    parser.add_argument("--max-tokens", type=int, default=None,
+                        help="Override max generated tokens (default: 4096 for math, 512 otherwise)")
+    parser.add_argument("--max-model-len", type=int, default=8192,
+                        help="vLLM max_model_len (prompt + generation budget)")
     args = parser.parse_args()
 
     # Load test data
@@ -192,13 +217,16 @@ def main():
         dtype="bfloat16",
         trust_remote_code=True,
         gpu_memory_utilization=0.9,
-        max_model_len=8192,
+        max_model_len=args.max_model_len,
         enable_sleep_mode=True,
         enforce_eager=True,
         disable_custom_all_reduce=True,
         enable_prefix_caching=True,
     )
-    max_tokens = 4096 if args.benchmark == "math" else 512
+    if args.max_tokens is not None:
+        max_tokens = args.max_tokens
+    else:
+        max_tokens = 4096 if args.benchmark == "math" else 512
     logits_processors = []
     if dual_meta is not None:
         from ragen.dual_vocab.constraint import make_vllm_logits_processor
@@ -210,14 +238,33 @@ def main():
             )
         )
         logger.info("Using dual-vocab logits constraint for generation")
-    sampling_params = SamplingParams(
-        temperature=0.0, max_tokens=max_tokens, logits_processors=logits_processors or None,
-    )
+    sampling_kwargs = {
+        "temperature": args.temperature,
+        "max_tokens": max_tokens,
+        "presence_penalty": args.presence_penalty,
+        "logits_processors": logits_processors or None,
+    }
+    if args.temperature > 0.0:
+        sampling_kwargs["top_p"] = args.top_p
+        sampling_kwargs["top_k"] = args.top_k
+    sampling_params = SamplingParams(**sampling_kwargs)
+    logger.info("Sampling: %s", {k: v for k, v in sampling_kwargs.items() if k != "logits_processors"})
+
+    if args.sot_prompt and args.tokenskip_prompt:
+        raise ValueError("--sot-prompt and --tokenskip-prompt are mutually exclusive")
 
     is_qwen = "qwen" in type(tokenizer).__name__.lower()
     prompts = []
     for sample in test_samples:
-        if args.tokenskip_prompt:
+        if args.sot_prompt:
+            prompt = build_sot_eval_prompt(
+                tokenizer,
+                sample["question"],
+                paradigm=args.sot_paradigm,
+                suppress_thinking=args.suppress_thinking,
+                multiturn_exemplars=args.sot_multiturn_exemplars,
+            )
+        elif args.tokenskip_prompt:
             prompt = build_tokenskip_eval_prompt(
                 tokenizer,
                 sample["question"],
@@ -269,13 +316,21 @@ def main():
             prediction = output.outputs[0].text
 
         # Split at </think>: reasoning tokens before, visible answer after.
-        think_tokens = num_tokens
-        visible_part = prediction
-        think_idx = prediction.find("</think>")
-        if think_idx != -1:
-            thinking_text = prediction[:think_idx]
-            visible_part = prediction[think_idx + len("</think>"):].strip()
-            think_tokens = len(tokenizer.encode(thinking_text, add_special_tokens=False))
+        # When --suppress-thinking is set the prompt already prefills
+        # <think></think>, so the model's generated text contains no </think>.
+        # Treat the entire generation as the visible part in that case.
+        if args.suppress_thinking:
+            think_tokens = 0
+            visible_part = prediction
+            think_idx = -1
+        else:
+            think_tokens = num_tokens
+            visible_part = prediction
+            think_idx = prediction.find("</think>")
+            if think_idx != -1:
+                thinking_text = prediction[:think_idx]
+                visible_part = prediction[think_idx + len("</think>"):].strip()
+                think_tokens = len(tokenizer.encode(thinking_text, add_special_tokens=False))
 
         answer = extract_boxed_or_numeric_answer(visible_part)
         if answer is not None:
@@ -329,11 +384,16 @@ def main():
 
     print(f"\n{'='*60}")
     print(f"Model: {args.model}")
-    prompt_format = (
-        f"tokenskip_chat_template:{args.model_family}"
-        if args.tokenskip_prompt
-        else "raw_text"
-    )
+    if args.sot_prompt:
+        prompt_format = (
+            f"sot:{args.sot_paradigm}"
+            + (":multiturn" if args.sot_multiturn_exemplars else "")
+            + (":suppress_thinking" if args.suppress_thinking else "")
+        )
+    elif args.tokenskip_prompt:
+        prompt_format = f"tokenskip_chat_template:{args.model_family}"
+    else:
+        prompt_format = "raw_text"
     print(f"Prompt: {prompt_format}")
     print(f"Samples: {len(test_samples)}")
     print(f"Correct: {correct}")
@@ -416,6 +476,10 @@ def main():
             "prompt_format": prompt_format,
             "tokenskip_prompt": args.tokenskip_prompt,
             "compression_ratio": args.compression_ratio,
+            "sot_prompt": args.sot_prompt,
+            "sot_paradigm": args.sot_paradigm if args.sot_prompt else None,
+            "sot_multiturn_exemplars": args.sot_multiturn_exemplars if args.sot_prompt else False,
+            "suppress_thinking": args.suppress_thinking,
             "num_samples": len(test_samples),
             "correct": correct,
             "accuracy": accuracy,

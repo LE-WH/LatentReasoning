@@ -38,6 +38,9 @@
 #   SKIP_COMPRESS    Set to 1 to skip step 2            (default: unset)
 #   SKIP_PREPARE     Set to 1 to skip step 3            (default: unset)
 #   SKIP_TRAIN       Set to 1 to skip step 4            (default: unset)
+#   SKIP_QUALITY     Set to 1 to skip the quality-filter step (2.5)
+#   QUALITY_FILTER_TOP   Fraction in (0,1] for top-X%-per-question filter (default: unset = no filter)
+#   QUALITY_SCORE_KEY    Score column to rank by: logprob_post_cot (default), logprob_boxed, logprob_answer
 
 set -euo pipefail
 
@@ -78,8 +81,34 @@ fi
 DATA_DIR="data/sft/tokenskip"
 ORIGINAL_DIR="${DATA_DIR}/original/${BENCHMARK}"
 COMPRESSED_DIR="${DATA_DIR}/compressed/${BENCHMARK}_raw"
+SCORES_DIR="${DATA_DIR}/scores/${BENCHMARK}_raw"
 MERGED_JSONL="${ORIGINAL_DIR}/${BENCHMARK}_raw_original_merged.jsonl"
-SFT_DATA="data/sft/${BENCHMARK}_tokenskip_rawtext.jsonl"
+
+# Optional per-question quality filter. Set QUALITY_FILTER_TOP to a fraction in
+# (0, 1] (e.g. 0.25 = top 25%) to enable. The score key is by default
+# ``logprob_post_cot`` (sum log-prob of the response continuation after the
+# compressed CoT, computed under the SFT base model).
+QUALITY_FILTER_TOP="${QUALITY_FILTER_TOP:-}"
+QUALITY_SCORE_KEY="${QUALITY_SCORE_KEY:-logprob_post_cot}"
+
+if [ -n "$QUALITY_FILTER_TOP" ]; then
+    QF_TAG="qf$(printf '%g' "$QUALITY_FILTER_TOP")"
+    case "$QUALITY_SCORE_KEY" in
+        logprob_answer)   QF_KEY_SHORT="ans" ;;
+        logprob_boxed)    QF_KEY_SHORT="boxed" ;;
+        logprob_post_cot) QF_KEY_SHORT="pc" ;;
+        *) QF_KEY_SHORT="$QUALITY_SCORE_KEY" ;;
+    esac
+    QF_FULL_TAG="${QF_TAG}-${QF_KEY_SHORT}"
+    FILTERED_DIR="${DATA_DIR}/compressed/${BENCHMARK}_raw_${QF_TAG}_${QUALITY_SCORE_KEY}"
+    PREP_COMPRESSED_DIR="$FILTERED_DIR"
+    TAG="${TAG}-${QF_FULL_TAG}"
+    SFT_DATA="data/sft/${BENCHMARK}_tokenskip_rawtext_${QF_FULL_TAG}.jsonl"
+else
+    PREP_COMPRESSED_DIR="$COMPRESSED_DIR"
+    SFT_DATA="data/sft/${BENCHMARK}_tokenskip_rawtext.jsonl"
+fi
+
 OUTPUT_DIR="results/sft/${BENCHMARK}/qwen3-4b-thinking-tokenskip-${TAG}"
 
 echo "============================================================"
@@ -95,10 +124,16 @@ echo "  Compress shards: ${COMPRESS_SHARDS}"
 echo "  Compress ratios: ${COMPRESS_RATIOS}"
 echo "  Train ratios:    ${TRAIN_RATIOS}"
 echo "  Eval ratios:     ${EVAL_RATIOS}"
+if [ -n "$QUALITY_FILTER_TOP" ]; then
+echo "  Quality filter:  top ${QUALITY_FILTER_TOP} per question (key=${QUALITY_SCORE_KEY})"
+fi
 echo "  Output:          ${OUTPUT_DIR}"
 echo "============================================================"
 
 mkdir -p "${ORIGINAL_DIR}" "${COMPRESSED_DIR}"
+if [ -n "$QUALITY_FILTER_TOP" ]; then
+    mkdir -p "${SCORES_DIR}" "${FILTERED_DIR}"
+fi
 
 # ------------------------------------------------------------------
 # Step 1: Collect original CoTs
@@ -167,6 +202,52 @@ else
 fi
 
 # ------------------------------------------------------------------
+# Step 2.5: (optional) Quality-score and filter per-question top-X%
+# ------------------------------------------------------------------
+if [ -n "$QUALITY_FILTER_TOP" ] && [ "${SKIP_QUALITY:-}" != "1" ]; then
+    echo -e "\n== Step 2.5: Score CoT quality (ratios from compressed_dir) =="
+    SCORE_RATIOS=$(ls "$COMPRESSED_DIR" \
+        | sed -nE 's/^compressed_ratio_([0-9.]+)\.jsonl$/\1/p' | sort -u | tr '\n' ' ')
+    for ratio in $SCORE_RATIOS; do
+        SCORE_OUT="${SCORES_DIR}/scores_ratio_${ratio}.jsonl"
+        if [ -f "$SCORE_OUT" ]; then
+            echo "  ratio=${ratio}: skip (${SCORE_OUT} exists)"
+            continue
+        fi
+        echo "  ratio=${ratio}: scoring (sharded×${NUM_SHARDS})"
+        for i in $(seq 0 $((NUM_SHARDS-1))); do
+            GPU=$(echo "$GPUS" | cut -d',' -f$((i+1)))
+            CUDA_VISIBLE_DEVICES="$GPU" PYTHONPATH=. "$PYTHON" \
+                -m sft.methods.tokenskip.quality_score \
+                --input "${COMPRESSED_DIR}/compressed_ratio_${ratio}.jsonl" \
+                --output "${SCORES_DIR}/scores_ratio_${ratio}_shard$(printf '%02d' "$i")of$(printf '%02d' "$NUM_SHARDS").jsonl" \
+                --model "$MODEL" \
+                --gpu "$GPU" \
+                --num-shards "$NUM_SHARDS" --shard-id "$i" \
+                --batch-size 8 &
+        done
+        wait
+        cat "${SCORES_DIR}/scores_ratio_${ratio}_shard"*.jsonl > "$SCORE_OUT"
+        rm "${SCORES_DIR}/scores_ratio_${ratio}_shard"*.jsonl
+    done
+
+    echo -e "\n== Step 2.6: Filter top ${QUALITY_FILTER_TOP} per question =="
+    for ratio in $SCORE_RATIOS; do
+        FILTERED_OUT="${FILTERED_DIR}/compressed_ratio_${ratio}.jsonl"
+        if [ -f "$FILTERED_OUT" ]; then
+            echo "  ratio=${ratio}: skip (${FILTERED_OUT} exists)"
+            continue
+        fi
+        PYTHONPATH=. "$PYTHON" -m sft.methods.tokenskip.quality_filter \
+            --scores "${SCORES_DIR}/scores_ratio_${ratio}.jsonl" \
+            --compressed "${COMPRESSED_DIR}/compressed_ratio_${ratio}.jsonl" \
+            --output "$FILTERED_OUT" \
+            --top "$QUALITY_FILTER_TOP" \
+            --score-key "$QUALITY_SCORE_KEY"
+    done
+fi
+
+# ------------------------------------------------------------------
 # Step 3: Build SFT dataset
 # ------------------------------------------------------------------
 if [ "${SKIP_PREPARE:-}" = "1" ]; then
@@ -177,7 +258,7 @@ else
         --method tokenskip \
         --benchmark "$BENCHMARK" \
         --original-cot-path "$MERGED_JSONL" \
-        --compressed-cot-dir "$COMPRESSED_DIR" \
+        --compressed-cot-dir "$PREP_COMPRESSED_DIR" \
         --response-format tokenskip_paper \
         --model-family qwen \
         --ratio-pool "$TRAIN_RATIOS" \

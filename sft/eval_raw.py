@@ -37,6 +37,7 @@ from sft.methods.tokenskip.prompts import (
     extract_boxed_or_numeric_answer,
 )
 from sft.methods.sot.prompts import build_sot_eval_prompt
+from sft.methods.cod.prompts import build_cod_eval_prompt
 
 _EVAL_BENCHMARKS: dict[str, dict] = {
     "gsm8k": {
@@ -125,6 +126,20 @@ def main():
                         help="Render SoT exemplars as real assistant turns (with their <think> "
                              "bodies intact) by hand-constructing ChatML, instead of inlining them "
                              "as user-turn prose. Only meaningful with --sot-prompt.")
+    parser.add_argument("--sot-system-only", action="store_true", default=False,
+                        help="SoT system prompt + raw user question (no exemplars). For evaluating "
+                             "models SFT'd on SoT data. Only meaningful with --sot-prompt.")
+    parser.add_argument("--cod-prompt", action="store_true", default=False,
+                        help="Use Chain-of-Draft (CoD) few-shot prompting (arXiv 2502.18600).")
+    parser.add_argument("--cod-paradigm", type=str, default="gsm8k",
+                        choices=["gsm8k"],
+                        help="CoD exemplar set (currently only the GSM8K-style minimal-draft set).")
+    parser.add_argument("--cod-multiturn-exemplars", action="store_true", default=False,
+                        help="Render CoD exemplars as real assistant turns (with their <think> "
+                             "bodies intact) by hand-constructing ChatML, instead of inlining them "
+                             "as user-turn prose. Only meaningful with --cod-prompt.")
+    parser.add_argument("--cod-shot", type=int, default=None,
+                        help="Number of CoD exemplars to use (default: all in the chosen paradigm).")
     parser.add_argument("--wandb-project", type=str, default=None,
                         help="W&B project name. If set, logs metrics and sample CoTs to wandb.")
     parser.add_argument("--wandb-run-name", type=str, default=None,
@@ -250,8 +265,9 @@ def main():
     sampling_params = SamplingParams(**sampling_kwargs)
     logger.info("Sampling: %s", {k: v for k, v in sampling_kwargs.items() if k != "logits_processors"})
 
-    if args.sot_prompt and args.tokenskip_prompt:
-        raise ValueError("--sot-prompt and --tokenskip-prompt are mutually exclusive")
+    exclusive_flags = [args.sot_prompt, args.tokenskip_prompt, args.cod_prompt]
+    if sum(bool(f) for f in exclusive_flags) > 1:
+        raise ValueError("--sot-prompt, --cod-prompt, and --tokenskip-prompt are mutually exclusive")
 
     is_qwen = "qwen" in type(tokenizer).__name__.lower()
     prompts = []
@@ -263,6 +279,16 @@ def main():
                 paradigm=args.sot_paradigm,
                 suppress_thinking=args.suppress_thinking,
                 multiturn_exemplars=args.sot_multiturn_exemplars,
+                system_only=args.sot_system_only,
+            )
+        elif args.cod_prompt:
+            prompt = build_cod_eval_prompt(
+                tokenizer,
+                sample["question"],
+                paradigm=args.cod_paradigm,
+                suppress_thinking=args.suppress_thinking,
+                multiturn_exemplars=args.cod_multiturn_exemplars,
+                n_shot=args.cod_shot,
             )
         elif args.tokenskip_prompt:
             prompt = build_tokenskip_eval_prompt(
@@ -387,7 +413,15 @@ def main():
     if args.sot_prompt:
         prompt_format = (
             f"sot:{args.sot_paradigm}"
+            + (":system_only" if args.sot_system_only else "")
             + (":multiturn" if args.sot_multiturn_exemplars else "")
+            + (":suppress_thinking" if args.suppress_thinking else "")
+        )
+    elif args.cod_prompt:
+        prompt_format = (
+            f"cod:{args.cod_paradigm}"
+            + (f":shot{args.cod_shot}" if args.cod_shot is not None else "")
+            + (":multiturn" if args.cod_multiturn_exemplars else "")
             + (":suppress_thinking" if args.suppress_thinking else "")
         )
     elif args.tokenskip_prompt:
@@ -479,6 +513,10 @@ def main():
             "sot_prompt": args.sot_prompt,
             "sot_paradigm": args.sot_paradigm if args.sot_prompt else None,
             "sot_multiturn_exemplars": args.sot_multiturn_exemplars if args.sot_prompt else False,
+            "cod_prompt": args.cod_prompt,
+            "cod_paradigm": args.cod_paradigm if args.cod_prompt else None,
+            "cod_multiturn_exemplars": args.cod_multiturn_exemplars if args.cod_prompt else False,
+            "cod_shot": args.cod_shot if args.cod_prompt else None,
             "suppress_thinking": args.suppress_thinking,
             "num_samples": len(test_samples),
             "correct": correct,

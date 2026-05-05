@@ -182,6 +182,37 @@ def build_sot_multiturn_prompt(
     return prompt
 
 
+def build_sot_system_only_prompt(
+    tokenizer,
+    question: str,
+    *,
+    paradigm: str = "chunked_symbolism",
+    suppress_thinking: bool = False,
+) -> str:
+    """SoT system prompt + plain user question (no few-shot exemplars).
+
+    Used to evaluate models that have been SFT'd to produce SoT-style output
+    unconditionally — at inference we just need the system prompt the model
+    was trained against, with the raw question in the user turn.
+    """
+    spec = get_sot_paradigm(paradigm)
+    messages = [
+        {"role": "system", "content": spec["system_prompt"]},
+        {"role": "user", "content": question},
+    ]
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    if suppress_thinking:
+        if prompt.endswith("<think>\n"):
+            prompt = prompt + "\n</think>\n\n"
+        else:
+            prompt = prompt + "<think>\n\n</think>\n\n"
+    return prompt
+
+
 def build_sot_eval_prompt(
     tokenizer,
     question: str,
@@ -189,6 +220,7 @@ def build_sot_eval_prompt(
     paradigm: str = "chunked_symbolism",
     suppress_thinking: bool = False,
     multiturn_exemplars: bool = False,
+    system_only: bool = False,
 ) -> str:
     """Build the final prompt string fed to the LM.
 
@@ -202,6 +234,13 @@ def build_sot_eval_prompt(
     instead of being inlined as user-turn prose. See
     :func:`build_sot_multiturn_prompt`.
     """
+    if system_only:
+        return build_sot_system_only_prompt(
+            tokenizer,
+            question,
+            paradigm=paradigm,
+            suppress_thinking=suppress_thinking,
+        )
     if multiturn_exemplars:
         return build_sot_multiturn_prompt(
             question,

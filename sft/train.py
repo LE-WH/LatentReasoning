@@ -384,6 +384,7 @@ def main(cfg: DictConfig) -> None:
         load_best_model_at_end=cfg.training.get("load_best_model_at_end", False),
         metric_for_best_model=cfg.training.get("metric_for_best_model", "loss"),
         save_total_limit=cfg.training.get("save_total_limit", None),
+        optim=cfg.training.get("optim", "adamw_torch"),
     )
     if "greater_is_better" in cfg.training:
         training_kwargs["greater_is_better"] = cfg.training.greater_is_better

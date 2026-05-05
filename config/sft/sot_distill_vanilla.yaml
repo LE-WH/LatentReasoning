@@ -1,0 +1,47 @@
+# SoT-distilled SFT — vanilla (no dual vocab) Qwen3-4B-Thinking-2507
+# Trained on combined MATH+GSM8K SoT teacher traces (top-4 shortest correct
+# per question). All-positions loss (no latent-only).
+
+defaults:
+  - base
+  - _self_
+
+benchmark: sot_distill_vanilla
+method: sot_distill
+
+model:
+  path: Qwen/Qwen3-4B-Thinking-2507
+  max_length: 4096
+
+data:
+  path: /workspace/LatentReasoning/data/sft/sot/sft_combined.jsonl
+
+training:
+  learning_rate: 1.0e-5
+  num_epochs: 100  # superseded by max_steps
+  max_steps: 1200
+  lr_scheduler_type: constant_with_warmup
+  warmup_ratio: 0.1
+  weight_decay: 0.0
+  per_device_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  gradient_checkpointing: true
+  optim: "paged_adamw_8bit"
+  logging_steps: 10
+  save_strategy: "steps"
+  save_steps: 1200
+  save_total_limit: 1
+  seed: 42
+  use_chat_template: true
+  load_best_model_at_end: false
+  bf16: true
+  output_dir: /workspace/LatentReasoning/results/sft/sot_distill/vanilla
+  report_to: "none"
+  run_name: "sot-distill-vanilla-qwen3-4b-thinking"
+
+lora:
+  enabled: false
+
+dual_vocab:
+  enabled: false

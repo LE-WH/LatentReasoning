@@ -1,0 +1,48 @@
+# SoT-distilled SFT — latent (Copy-mode dual vocab) Qwen3-4B-Thinking-2507
+# Same SFT data as vanilla; the trainer remaps tokens inside <think>...</think>
+# to latent IDs (visible_id + V) before training. All-positions loss.
+
+defaults:
+  - base
+  - _self_
+
+benchmark: sot_distill_latent
+method: sot_distill
+
+model:
+  path: /workspace/LatentReasoning/checkpoints/dual_qwen_4b_thinking
+  max_length: 2048
+
+data:
+  path: /workspace/LatentReasoning/data/sft/sot/sft_combined.jsonl
+
+training:
+  learning_rate: 1.0e-5
+  num_epochs: 100  # superseded by max_steps
+  max_steps: 1200
+  lr_scheduler_type: constant_with_warmup
+  warmup_ratio: 0.1
+  weight_decay: 0.0
+  per_device_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  gradient_checkpointing: true
+  optim: "paged_adamw_8bit"
+  logging_steps: 10
+  save_strategy: "steps"
+  save_steps: 1200
+  save_total_limit: 1
+  seed: 42
+  use_chat_template: true
+  load_best_model_at_end: false
+  bf16: true
+  output_dir: /workspace/LatentReasoning/results/sft/sot_distill/latent
+  report_to: "wandb"
+  run_name: "sot-distill-latent-qwen3-4b-thinking"
+
+lora:
+  enabled: false
+
+dual_vocab:
+  enabled: true
+  latent_only: false
